@@ -2,157 +2,171 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class ComplexConv2d(nn.Module):
     """
-    Complex Convolution using standard real-valued Conv2D.
-    (Real_in + i*Imag_in) * (Real_W + i*Imag_W) 
-    = (Real_in*Real_W - Imag_in*Imag_W) + i*(Real_in*Imag_W + Imag_in*Real_W)
+    Complex convolution: (W_r + j*W_i)(x_r + j*x_i)
+    out_real = W_r(x_r) - W_i(x_i)
+    out_imag = W_r(x_i) + W_i(x_r)
     """
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
-        super(ComplexConv2d, self).__init__()
-        self.conv_real = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
-        self.conv_imag = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
+        super().__init__()
+        self.conv_real = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, bias=False)
+        self.conv_imag = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, bias=False)
 
     def forward(self, real, imag):
         out_real = self.conv_real(real) - self.conv_imag(imag)
         out_imag = self.conv_real(imag) + self.conv_imag(real)
         return out_real, out_imag
 
+
 class ComplexConvTranspose2d(nn.Module):
-    """Complex Transposed Convolution for the Decoder"""
+    """Complex transposed convolution for the decoder upsampling."""
     def __init__(self, in_channels, out_channels, kernel_size=2, stride=2, padding=0):
-        super(ComplexConvTranspose2d, self).__init__()
-        self.conv_t_real = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding)
-        self.conv_t_imag = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding)
+        super().__init__()
+        self.conv_t_real = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding, bias=False)
+        self.conv_t_imag = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding, bias=False)
 
     def forward(self, real, imag):
         out_real = self.conv_t_real(real) - self.conv_t_imag(imag)
         out_imag = self.conv_t_real(imag) + self.conv_t_imag(real)
         return out_real, out_imag
 
+
 class ComplexBatchNorm2d(nn.Module):
-    """Simplified Complex Batch Normalization"""
+    """Independent BN on real and imaginary channels."""
     def __init__(self, num_features):
-        super(ComplexBatchNorm2d, self).__init__()
+        super().__init__()
         self.bn_real = nn.BatchNorm2d(num_features)
         self.bn_imag = nn.BatchNorm2d(num_features)
 
     def forward(self, real, imag):
         return self.bn_real(real), self.bn_imag(imag)
 
+
 class ComplexLeakyReLU(nn.Module):
     def __init__(self, negative_slope=0.2):
-        super(ComplexLeakyReLU, self).__init__()
-        self.relu = nn.LeakyReLU(negative_slope)
-        
+        super().__init__()
+        self.act = nn.LeakyReLU(negative_slope, inplace=True)
+
     def forward(self, real, imag):
-        return self.relu(real), self.relu(imag)
+        return self.act(real), self.act(imag)
+
 
 class ComplexDoubleConv(nn.Module):
-    """(ComplexConv2d -> ComplexBatchNorm -> ComplexLeakyReLU) * 2"""
-    def __init__(self, in_channels, out_channels):
+    """Two complex conv blocks: (ComplexConv -> ComplexBN -> ComplexLeakyReLU) x2"""
+    def __init__(self, in_ch, out_ch):
         super().__init__()
-        self.conv1 = ComplexConv2d(in_channels, out_channels)
-        self.bn1 = ComplexBatchNorm2d(out_channels)
-        self.relu1 = ComplexLeakyReLU()
-        
-        self.conv2 = ComplexConv2d(out_channels, out_channels)
-        self.bn2 = ComplexBatchNorm2d(out_channels)
-        self.relu2 = ComplexLeakyReLU()
+        self.conv1 = ComplexConv2d(in_ch, out_ch)
+        self.bn1   = ComplexBatchNorm2d(out_ch)
+        self.act1  = ComplexLeakyReLU()
+        self.conv2 = ComplexConv2d(out_ch, out_ch)
+        self.bn2   = ComplexBatchNorm2d(out_ch)
+        self.act2  = ComplexLeakyReLU()
 
     def forward(self, real, imag):
-        r1, i1 = self.conv1(real, imag)
-        r1, i1 = self.bn1(r1, i1)
-        r1, i1 = self.relu1(r1, i1)
-        
-        r2, i2 = self.conv2(r1, i1)
-        r2, i2 = self.bn2(r2, i2)
-        return self.relu2(r2, i2)
+        r, i = self.act1(*self.bn1(*self.conv1(real, imag)))
+        r, i = self.act2(*self.bn2(*self.conv2(r, i)))
+        return r, i
+
 
 class ComplexDown(nn.Module):
-    """Complex Maxpooling followed by Double Complex Convolution"""
-    def __init__(self, in_channels, out_channels):
+    """MaxPool2d (applied separately to r/i) -> ComplexDoubleConv."""
+    def __init__(self, in_ch, out_ch):
         super().__init__()
         self.pool = nn.MaxPool2d(2)
-        self.double_conv = ComplexDoubleConv(in_channels, out_channels)
+        self.conv = ComplexDoubleConv(in_ch, out_ch)
 
     def forward(self, real, imag):
-        p_real = self.pool(real)
-        p_imag = self.pool(imag)
-        return self.double_conv(p_real, p_imag)
+        return self.conv(self.pool(real), self.pool(imag))
+
 
 class ComplexUp(nn.Module):
-    """Complex Upscaling and Concatenation (Skip Connections)"""
-    def __init__(self, in_channels, out_channels):
+    """Upsample via ComplexConvTranspose2d, pad if needed, cat skip, then DoubleConv."""
+    def __init__(self, in_ch, out_ch):
         super().__init__()
-        self.up = ComplexConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
-        self.conv = ComplexDoubleConv(in_channels, out_channels)
+        self.up   = ComplexConvTranspose2d(in_ch, in_ch // 2, kernel_size=2, stride=2)
+        self.conv = ComplexDoubleConv(in_ch, out_ch)
 
-    def forward(self, real_en, imag_en, real_up, imag_up):
-        r_upsampled, i_upsampled = self.up(real_up, imag_up)
-        
-        # Padding to fix mismatch like in regular U-Net
-        diffY = real_en.size()[2] - r_upsampled.size()[2]
-        diffX = real_en.size()[3] - r_upsampled.size()[3]
-        
-        r_upsampled = F.pad(r_upsampled, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2])
-        i_upsampled = F.pad(i_upsampled, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2])
-        
-        # Concatenate skip connections
-        r_cat = torch.cat([real_en, r_upsampled], dim=1)
-        i_cat = torch.cat([imag_en, i_upsampled], dim=1)
-        
-        return self.conv(r_cat, i_cat)
+    def forward(self, skip_r, skip_i, up_r, up_i):
+        up_r, up_i = self.up(up_r, up_i)
+
+        # Pad upsampled tensor to match skip dimensions (handles odd sizes)
+        dY = skip_r.size(2) - up_r.size(2)
+        dX = skip_r.size(3) - up_r.size(3)
+        pad = [dX // 2, dX - dX // 2, dY // 2, dY - dY // 2]
+        up_r = F.pad(up_r, pad)
+        up_i = F.pad(up_i, pad)
+
+        r = torch.cat([skip_r, up_r], dim=1)
+        i = torch.cat([skip_i, up_i], dim=1)
+        return self.conv(r, i)
+
 
 class DeepComplexUNet(nn.Module):
     """
-    State-of-the-Art Deep Complex U-Net (DCUNet)
-    Reconstructs both Magnitude AND Phase of the audio.
+    Phase-Aware Speech Enhancement with Deep Complex U-Net.
+    Outputs a Complex Ratio Mask (cRM) bounded by tanh.
+
+    model_size options:
+        'dcu8'  - 4 encoder blocks (~6GB VRAM,  batch 16) -- your original
+        'dcu16' - 8 encoder blocks (~16GB VRAM, batch 8)  -- recommended
+        'dcu20' - 10 encoder blocks (~28GB VRAM, batch 4) -- paper's best
     """
-    def __init__(self, n_channels=1):
-        super(DeepComplexUNet, self).__init__()
-        
+    CHANNEL_CONFIGS = {
+        'dcu8':  [32, 64, 128, 256, 512],
+        'dcu16': [32, 64, 64, 128, 128, 256, 256, 512, 512],
+        'dcu20': [32, 64, 64, 128, 128, 256, 256, 256, 512, 512, 1024],
+    }
+
+    def __init__(self, n_channels=1, model_size='dcu16'):
+        super().__init__()
+        assert model_size in self.CHANNEL_CONFIGS, \
+            f"model_size must be one of {list(self.CHANNEL_CONFIGS.keys())}"
+
+        channels = self.CHANNEL_CONFIGS[model_size]
+        self.model_size = model_size
+
         # Encoder
-        self.inc = ComplexDoubleConv(n_channels, 32)
-        self.down1 = ComplexDown(32, 64)
-        self.down2 = ComplexDown(64, 128)
-        self.down3 = ComplexDown(128, 256)
-        self.down4 = ComplexDown(256, 512)
-        
-        # Decoder (Single Head, because predicting complex mask naturally separates noise/speech)
-        self.up1 = ComplexUp(512, 256)
-        self.up2 = ComplexUp(256, 128)
-        self.up3 = ComplexUp(128, 64)
-        self.up4 = ComplexUp(64, 32)
-        
-        # Final Output Layer 
-        self.out_conv = ComplexConv2d(32, 1, kernel_size=1, padding=0)
+        self.inc   = ComplexDoubleConv(n_channels, channels[0])
+        self.downs = nn.ModuleList([
+            ComplexDown(channels[i], channels[i + 1])
+            for i in range(len(channels) - 1)
+        ])
+
+        # Decoder (mirrors encoder in reverse)
+        dec_ch = list(reversed(channels))
+        self.ups = nn.ModuleList([
+            ComplexUp(dec_ch[i], dec_ch[i + 1])
+            for i in range(len(dec_ch) - 1)
+        ])
+
+        # Output: 1x1 complex conv -> tanh bounded cRM
+        self.out_conv = ComplexConv2d(channels[0], n_channels, kernel_size=1, padding=0)
 
     def forward(self, real, imag):
-        # Guarantee 4D shape [Batch, Channels, Freq, Time]
+        # Ensure [B, C, F, T]
         if real.dim() == 3:
             real = real.unsqueeze(1)
             imag = imag.unsqueeze(1)
-            
-        # Encoder
-        r1, i1 = self.inc(real, imag)
-        r2, i2 = self.down1(r1, i1)
-        r3, i3 = self.down2(r2, i2)
-        r4, i4 = self.down3(r3, i3)
-        r_latent, i_latent = self.down4(r4, i4)
-        
-        # Decoder + Skip Connections
-        r_up1, i_up1 = self.up1(r4, i4, r_latent, i_latent)
-        r_up2, i_up2 = self.up2(r3, i3, r_up1, i_up1)
-        r_up3, i_up3 = self.up3(r2, i2, r_up2, i_up2)
-        r_up4, i_up4 = self.up4(r1, i1, r_up3, i_up3)
-        
-        # Final Complex Mask prediction
-        mask_real, mask_imag = self.out_conv(r_up4, i_up4)
-        
-        # Instead of Sigmoid (which is only for magnitude 0 to 1), 
-        # complex masks use Tanh to bound between -1 and 1
-        mask_real = torch.tanh(mask_real)
-        mask_imag = torch.tanh(mask_imag)
-        
-        return mask_real, mask_imag
+
+        # Encoder — save all skip connections
+        skips_r, skips_i = [], []
+        r, i = self.inc(real, imag)
+        skips_r.append(r)
+        skips_i.append(i)
+
+        for down in self.downs:
+            r, i = down(r, i)
+            skips_r.append(r)
+            skips_i.append(i)
+
+        # Bottleneck is the last element of skips
+        r, i = skips_r.pop(), skips_i.pop()
+
+        # Decoder — consume skips in reverse
+        for up in self.ups:
+            r, i = up(skips_r.pop(), skips_i.pop(), r, i)
+
+        mask_r, mask_i = self.out_conv(r, i)
+        return torch.tanh(mask_r), torch.tanh(mask_i)

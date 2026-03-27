@@ -31,10 +31,11 @@ else
     echo "WARNING: Virtual environment 'unet_env' not found. Ensure required modules are installed."
 fi
 
-# 4. Optional: Download Dataset if it doesn't exist
-# This will call the bash script we wrote earlier. 
-# It exits safely if 'MS-SNSD' folder already exists.
-bash download_dataset.sh "./MS-SNSD"
+# 4. Optional: Prepare Dataset if it doesn't exist
+# This will call the bash script we wrote earlier to clone the DNS challenge repo.
+# Note: You need to download data and run synthesizer manually inside the DNS Challenge folder!
+# It exits safely if 'DNS-Challenge' folder already exists.
+bash download_dataset.sh "./DNS-Challenge"
 
 # 5. Run the training script
 echo "Starting multi-task U-Net training..."

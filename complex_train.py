@@ -1,116 +1,277 @@
 import os
 import torch
-import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+import torchaudio
+import numpy as np
 from tqdm import tqdm
 
-from complex_model import DeepComplexUNet
+from complex_model    import DeepComplexUNet
 from complex_data_prep import get_dataloaders
+from complex_losses   import CombinedLoss
 
-CLEAN_DIR = "./MS-SNSD/clean_train"
-NOISE_DIR = "./MS-SNSD/noise_train"
-BATCH_SIZE = 16
-# NUM_EPOCHS = 100 # Increased epochs because Phase is harder to learn
-NUM_EPOCHS = 120 # Fine-tuning for 20 more epochs with Aggressive SNR
-LEARNING_RATE = 2e-4
+# ---------------------------------------------------------------------------
+# Configuration — edit these to match your setup
+# ---------------------------------------------------------------------------
+
+# Data directories
+# CLEAN_DIR = "./MS-SNSD/clean_train"
+# NOISE_DIR = "./MS-SNSD/noise_train"
+
+# DNS Challenge directories
+CLEAN_DIR = "./DNS-Challenge/datasets/clean/"
+NOISE_DIR = "./DNS-Challenge/datasets/noisy/"
+RIR_DIR   = None        # set to path of RIR .wav files, or None to skip
+USE_DNS   = True        # True if using pre-mixed DNS dataset
+
+# STFT settings — must match inference
+N_FFT      = 512
+HOP_LENGTH = 256
+
+# Model
+MODEL_SIZE = 'dcu16'    # 'dcu8' | 'dcu16' | 'dcu20'
+
+# Training
+BATCH_SIZE  = 8         # reduce to 4 if OOM; 16 is fine for dcu8
+NUM_EPOCHS  = 150
+LR          = 1e-3
+SNR_RANGE   = (0, 40)   # DNS-style wide range; use (-5, 15) for MS-SNSD only
+
+# Paths
+SAVE_DIR        = "./checkpoints"
+BEST_MODEL_PATH = "./best_model.pth"
+
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-SAVE_DIR = "./complex_checkpoints"
 
-def train_one_epoch(model, dataloader, optimizer, criterion, epoch):
+# ---------------------------------------------------------------------------
+# Evaluation with PESQ + STOI
+# ---------------------------------------------------------------------------
+
+def evaluate(model, val_loader, istft, device, max_batches=40):
+    """
+    Returns (mean_PESQ, mean_STOI) over up to max_batches validation batches.
+    Requires:  pip install pesq pystoi
+    """
+    try:
+        from pesq   import pesq   as pesq_fn
+        from pystoi import stoi   as stoi_fn
+    except ImportError:
+        print("  [eval] Install 'pesq' and 'pystoi' for metrics: "
+              "pip install pesq pystoi")
+        return None, None
+
+    model.eval()
+    pesq_scores, stoi_scores = [], []
+
+    with torch.no_grad():
+        for batch_idx, (mix_r, mix_i, clean_r, clean_i) in enumerate(val_loader):
+            if batch_idx >= max_batches:
+                break
+
+            mix_r, mix_i = mix_r.to(device), mix_i.to(device)
+            clean_r, clean_i = clean_r.to(device), clean_i.to(device)
+
+            mask_r, mask_i = model(mix_r, mix_i)
+
+            # Apply complex ratio mask
+            est_r = mask_r * mix_r - mask_i * mix_i
+            est_i = mask_r * mix_i + mask_i * mix_r
+
+            # Convert to waveforms
+            est_wav   = istft(torch.complex(est_r.squeeze(1),   est_i.squeeze(1))).cpu().numpy()
+            clean_wav = istft(torch.complex(clean_r.squeeze(1), clean_i.squeeze(1))).cpu().numpy()
+
+            for j in range(est_wav.shape[0]):
+                e = est_wav[j]
+                c = clean_wav[j]
+
+                # Normalise before scoring (required by pesq/stoi)
+                e = e / (np.max(np.abs(e)) + 1e-8)
+                c = c / (np.max(np.abs(c)) + 1e-8)
+
+                try:
+                    pesq_scores.append(pesq_fn(16000, c, e, 'wb'))
+                    stoi_scores.append(stoi_fn(c, e, 16000, extended=False))
+                except Exception:
+                    pass    # skip clips that are too short / silent
+
+    if len(pesq_scores) == 0:
+        return None, None
+
+    return float(np.mean(pesq_scores)), float(np.mean(stoi_scores))
+
+
+# ---------------------------------------------------------------------------
+# Single training epoch
+# ---------------------------------------------------------------------------
+
+def train_one_epoch(model, dataloader, optimizer, scheduler,
+                    criterion, istft, epoch, num_epochs, device):
     model.train()
     running_loss = 0.0
+    running_wsdr = 0.0
+    running_mr   = 0.0
+
     loop = tqdm(dataloader, total=len(dataloader), leave=False)
-    # noisy audio input and ground truth clean audio
+
     for mix_real, mix_imag, clean_real, clean_imag in loop:
-        # Move everything to GPU
-        mix_real = mix_real.to(DEVICE)
-        mix_imag = mix_imag.to(DEVICE)
-        clean_real = clean_real.to(DEVICE)
-        clean_imag = clean_imag.to(DEVICE)
-        
-        # In a typical Complex Masking paper, the model outputs a Complex Mask (cRM)
-        # We multiply the cRM by the Mixed Input to estimate the Clean output.
-        # However, for simplicity and stability, we will just have the model directly guess
-        # the normalized clean Real and Imaginary spectrograms based on the mixture.
-        
-        # Forward Pass: Reconstruct Real and Imaginary Clean Speech
-        pred_clean_real, pred_clean_imag = model(mix_real, mix_imag)
-        
-        # Calculate Separate Losses
-        loss_real = criterion(pred_clean_real, clean_real)
-        loss_imag = criterion(pred_clean_imag, clean_imag)
-        
-        # The Complex Loss is simply Re + Im difference
-        loss = loss_real + loss_imag
-        
-        # Backward Pass
+        mix_real  = mix_real.to(device)
+        mix_imag  = mix_imag.to(device)
+        clean_real = clean_real.to(device)
+        clean_imag = clean_imag.to(device)
+
+        # ---- Forward pass ----
+        mask_r, mask_i = model(mix_real, mix_imag)
+
+        # Apply Complex Ratio Mask:  est = mask * noisy  (complex multiply)
+        #   (M_r + j*M_i)(Y_r + j*Y_i) = (M_r*Y_r - M_i*Y_i) + j(M_r*Y_i + M_i*Y_r)
+        est_real = mask_r * mix_real  - mask_i * mix_imag
+        est_imag = mask_r * mix_imag  + mask_i * mix_real
+
+        # Convert estimated and targets to waveforms for time-domain loss
+        est_wav   = istft(torch.complex(est_real.squeeze(1),   est_imag.squeeze(1)))
+        clean_wav = istft(torch.complex(clean_real.squeeze(1), clean_imag.squeeze(1)))
+        noisy_wav = istft(torch.complex(mix_real.squeeze(1),   mix_imag.squeeze(1)))
+
+        # ---- Combined wSDR + Multi-Resolution STFT loss ----
+        loss, loss_wsdr, loss_mr = criterion(clean_wav, noisy_wav, est_wav)
+
+        # ---- Backward pass ----
         optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         optimizer.step()
-        
-        running_loss += loss.item()
-        loop.set_description(f"Epoch [{epoch+1}/{NUM_EPOCHS}]")
-        # print live loss per batch
-        loop.set_postfix(loss=loss.item())
+        scheduler.step()   # OneCycleLR steps every batch
 
-    return running_loss / len(dataloader)
+        running_loss += loss.item()
+        running_wsdr += loss_wsdr.item()
+        running_mr   += loss_mr.item()
+
+        loop.set_description(f"Epoch [{epoch+1}/{num_epochs}]")
+        loop.set_postfix(
+            loss=f"{loss.item():.4f}",
+            wsdr=f"{loss_wsdr.item():.4f}",
+            mr=f"{loss_mr.item():.4f}"
+        )
+
+    n = len(dataloader)
+    return running_loss / n, running_wsdr / n, running_mr / n
+
+
+# ---------------------------------------------------------------------------
+# Main training loop
+# ---------------------------------------------------------------------------
 
 def main():
-    print(f"Training DCUNet on device: {DEVICE}")
+    print(f"Training DCUNet ({MODEL_SIZE}) on {DEVICE}")
     os.makedirs(SAVE_DIR, exist_ok=True)
-    
-    # 1. Find the latest checkpoint if it exists
-    start_epoch = 0
-    checkpoint_path = None
-    if os.path.exists(SAVE_DIR):
-        checkpoints = [f for f in os.listdir(SAVE_DIR) if f.endswith('.pth')]
-        if checkpoints:
-            # Sort by epoch number: dcunet_epoch_40.pth -> 40
-            checkpoints.sort(key=lambda x: int(x.split('_')[-1].split('.')[0]))
-            latest_checkpoint = checkpoints[-1]
-            checkpoint_path = os.path.join(SAVE_DIR, latest_checkpoint)
-    
-    model = DeepComplexUNet(n_channels=1).to(DEVICE)
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
-    # 2. Load checkpoint if found
-    if checkpoint_path:
-        print(f"Resuming from checkpoint: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint['epoch'] + 1
-        print(f"Restarting from Epoch {start_epoch}")
+    # ---- Data ----
+    print("Loading data...")
+    train_loader, val_loader = get_dataloaders(
+        CLEAN_DIR, NOISE_DIR,
+        rir_dir=RIR_DIR,
+        batch_size=BATCH_SIZE,
+        snr_range=SNR_RANGE,
+        is_dns=USE_DNS
+    )
+    print(f"  Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
 
-    print("Loading Complex Spectral Data (Aggressive SNR)...")
-    # train_loader, val_loader = get_dataloaders(CLEAN_DIR, NOISE_DIR, batch_size=BATCH_SIZE)
-    train_loader, val_loader = get_dataloaders(CLEAN_DIR, NOISE_DIR, batch_size=BATCH_SIZE, snr_range=(-15, 10))
-    
-    # We use MSELoss. Because of the Sigmoid/Tanh constraints on inputs, 
-    # MSE operates perfectly to calculate pixel-by-pixel real/imag differences.
-    criterion = nn.MSELoss() 
-    
-    # Optional but highly recommended: Learning Rate Scheduler
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3, factor=0.5)
+    # ---- Model ----
+    model = DeepComplexUNet(n_channels=1, model_size=MODEL_SIZE).to(DEVICE)
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"  Model parameters: {n_params:,}")
 
-    print("Starting Deep Complex Training...")
+    # ---- ISTFT (used for time-domain loss and evaluation) ----
+    istft = torchaudio.transforms.InverseSpectrogram(
+        n_fft=N_FFT, hop_length=HOP_LENGTH, normalized=True
+    ).to(DEVICE)
+
+    # ---- Loss, Optimizer, Scheduler ----
+    criterion = CombinedLoss(mr_weight=0.5).to(DEVICE)
+    optimizer = optim.Adam(model.parameters(), lr=LR, betas=(0.9, 0.999))
+
+    # OneCycleLR: linear warmup for 5%, cosine decay for the rest.
+    # Much better convergence than ReduceLROnPlateau for encoder-decoders.
+    scheduler = optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=LR,
+        steps_per_epoch=len(train_loader),
+        epochs=NUM_EPOCHS,
+        pct_start=0.05,       # 5% warmup
+        anneal_strategy='cos',
+        div_factor=25,        # initial lr = max_lr / 25
+        final_div_factor=1e4  # final lr = initial_lr / 1e4
+    )
+
+    # ---- Resume from checkpoint if one exists ----
+    start_epoch  = 0
+    best_pesq    = -999.0
+
+    checkpoints = sorted(
+        [f for f in os.listdir(SAVE_DIR) if f.endswith('.pth')],
+        key=lambda x: int(x.split('_')[-1].split('.')[0])
+    )
+    if checkpoints:
+        ckpt_path = os.path.join(SAVE_DIR, checkpoints[-1])
+        print(f"Resuming from {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=True)
+        model.load_state_dict(ckpt['model_state_dict'])
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        start_epoch = ckpt['epoch'] + 1
+        best_pesq   = ckpt.get('best_pesq', -999.0)
+        print(f"  Resuming from epoch {start_epoch}, best PESQ so far: {best_pesq:.3f}")
+
+    # ---- Training loop ----
+    print("\nStarting training...")
     for epoch in range(start_epoch, NUM_EPOCHS):
-        avg_loss = train_one_epoch(model, train_loader, optimizer, criterion, epoch)
-        print(f"Epoch [{epoch+1}/{NUM_EPOCHS}] completed. Complex MSE Loss: {avg_loss:.6f}")
-        
-        # Update Scheduler based on training loss (ideally use validation loss if added)
-        scheduler.step(avg_loss)
-        
+
+        avg_loss, avg_wsdr, avg_mr = train_one_epoch(
+            model, train_loader, optimizer, scheduler,
+            criterion, istft, epoch, NUM_EPOCHS, DEVICE
+        )
+
+        print(f"Epoch [{epoch+1}/{NUM_EPOCHS}] "
+              f"loss={avg_loss:.4f}  wsdr={avg_wsdr:.4f}  mr={avg_mr:.4f}  "
+              f"lr={optimizer.param_groups[0]['lr']:.6f}")
+
+        # ---- Evaluate every 5 epochs ----
+        if (epoch + 1) % 5 == 0:
+            pesq_score, stoi_score = evaluate(
+                model, val_loader, istft, DEVICE
+            )
+            if pesq_score is not None:
+                print(f"  [Val] PESQ={pesq_score:.3f}  STOI={stoi_score:.3f}")
+
+                # Save best model by PESQ (not by fixed epoch schedule)
+                if pesq_score > best_pesq:
+                    best_pesq = pesq_score
+                    torch.save({
+                        'epoch':               epoch,
+                        'model_size':          MODEL_SIZE,
+                        'model_state_dict':    model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'pesq':                pesq_score,
+                        'stoi':                stoi_score,
+                        'best_pesq':           best_pesq,
+                    }, BEST_MODEL_PATH)
+                    print(f"  ✓ New best PESQ {pesq_score:.3f} — saved to {BEST_MODEL_PATH}")
+
+        # ---- Periodic checkpoint every 10 epochs ----
         if (epoch + 1) % 10 == 0:
-            save_path = os.path.join(SAVE_DIR, f"dcunet_epoch_{epoch+1}.pth")
+            ckpt_path = os.path.join(SAVE_DIR, f"dcunet_epoch_{epoch+1}.pth")
             torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
+                'epoch':                epoch,
+                'model_size':           MODEL_SIZE,
+                'model_state_dict':     model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'loss': avg_loss,
-            }, save_path)
-            print(f"Saved complex checkpoint to {save_path}")
+                'loss':                 avg_loss,
+                'best_pesq':            best_pesq,
+            }, ckpt_path)
+            print(f"  Checkpoint saved: {ckpt_path}")
+
+    print(f"\nTraining complete. Best PESQ: {best_pesq:.3f}")
+    print(f"Best model saved at: {BEST_MODEL_PATH}")
+
 
 if __name__ == "__main__":
     main()
