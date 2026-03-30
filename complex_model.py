@@ -4,9 +4,8 @@ import torch.nn.functional as F
 
 class ComplexConv2d(nn.Module):
     """
-    Complex Convolution using standard real-valued Conv2D.
-    (Real_in + i*Imag_in) * (Real_W + i*Imag_W) 
-    = (Real_in*Real_W - Imag_in*Imag_W) + i*(Real_in*Imag_W + Imag_in*Real_W)
+    Complex Convolution using standard real-valued Conv2D blocks.
+    Preserves strict phase weight sharing between real and imaginary paths.
     """
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
         super(ComplexConv2d, self).__init__()
@@ -19,15 +18,19 @@ class ComplexConv2d(nn.Module):
         return out_real, out_imag
 
 class ComplexConvTranspose2d(nn.Module):
-    """Complex Transposed Convolution for the Decoder"""
+    """
+    Complex Transposed Convolution for the Decoder.
+    Applies the mathematical Complex Adjoint (Conjugate Transpose) operation.
+    """
     def __init__(self, in_channels, out_channels, kernel_size=2, stride=2, padding=0):
         super(ComplexConvTranspose2d, self).__init__()
         self.conv_t_real = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding)
         self.conv_t_imag = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding)
 
     def forward(self, real, imag):
-        out_real = self.conv_t_real(real) - self.conv_t_imag(imag)
-        out_imag = self.conv_t_real(imag) + self.conv_t_imag(real)
+        # Complex conjugate transpose math: (U^T - iV^T)(X + iY)
+        out_real = self.conv_t_real(real) + self.conv_t_imag(imag)
+        out_imag = self.conv_t_real(imag) - self.conv_t_imag(real)
         return out_real, out_imag
 
 class ComplexBatchNorm2d(nn.Module):
@@ -70,16 +73,18 @@ class ComplexDoubleConv(nn.Module):
         return self.relu2(r2, i2)
 
 class ComplexDown(nn.Module):
-    """Complex Maxpooling followed by Double Complex Convolution"""
+    """
+    Strided Complex Convolution followed by Double Complex Convolution.
+    (Replaces MaxPool to prevent destruction of phase structure)
+    """
     def __init__(self, in_channels, out_channels):
         super().__init__()
-        self.pool = nn.MaxPool2d(2)
+        self.downsample = ComplexConv2d(in_channels, in_channels, kernel_size=2, stride=2, padding=0)
         self.double_conv = ComplexDoubleConv(in_channels, out_channels)
 
     def forward(self, real, imag):
-        p_real = self.pool(real)
-        p_imag = self.pool(imag)
-        return self.double_conv(p_real, p_imag)
+        d_real, d_imag = self.downsample(real, imag)
+        return self.double_conv(d_real, d_imag)
 
 class ComplexUp(nn.Module):
     """Complex Upscaling and Concatenation (Skip Connections)"""

@@ -32,6 +32,10 @@ def infer_complex_audio(noisy_wav_path, model_path, output_path="complex_cleaned
     if noisy_waveform.shape[0] > 1:
         noisy_waveform = torch.mean(noisy_waveform, dim=0, keepdim=True)
 
+    # Waveform Peak Normalization (to match training distribution)
+    max_amp = torch.max(torch.abs(noisy_waveform)) + 1e-8
+    noisy_waveform = noisy_waveform / max_amp
+
     # 3. Apply STFT 
     stft = torchaudio.transforms.Spectrogram(
         n_fft=n_fft, 
@@ -59,9 +63,14 @@ def infer_complex_audio(noisy_wav_path, model_path, output_path="complex_cleaned
     mix_real_input = mix_real.unsqueeze(0).to(device)
     mix_imag_input = mix_imag.unsqueeze(0).to(device)
     
-    # 4. Predict
+    # 4. Predict Complex Mask
     with torch.no_grad():
-        pred_clean_real, pred_clean_imag = model(mix_real_input, mix_imag_input)
+        mask_real, mask_imag = model(mix_real_input, mix_imag_input)
+        
+    # Apply Complex Ratio Mask to the mixture
+    pred_clean_real = mask_real * mix_real_input - mask_imag * mix_imag_input
+    pred_clean_imag = mask_real * mix_imag_input + mask_imag * mix_real_input
+
     
     # Denormalize
     pred_clean_real = pred_clean_real.squeeze(0) * normalize_factor
@@ -73,6 +82,9 @@ def infer_complex_audio(noisy_wav_path, model_path, output_path="complex_cleaned
     
     # 6. Apply Inverse STFT
     cleaned_waveform = istft(cleaned_complex)
+    
+    # Restore Original Volume
+    cleaned_waveform = cleaned_waveform * max_amp
 
     print(f"Saving DCUNet cleaned audio to {output_path}")
     torchaudio.save(output_path, cleaned_waveform, sample_rate)

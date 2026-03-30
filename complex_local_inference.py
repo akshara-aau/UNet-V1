@@ -46,8 +46,9 @@ def infer_local_audio(noisy_wav_path, model_path, output_path="cleaned_result_lo
     noisy_waveform = torch.FloatTensor(audio_data).unsqueeze(0)
 
     # Peak Normalization: Boost quiet audio to max volume before processing
-    # This ensures the AI can clearly 'see' the patterns even in quiet recordings
-    noisy_waveform = noisy_waveform / (torch.max(torch.abs(noisy_waveform)) + 1e-8)
+    # (Matches training distribution)
+    max_amp = torch.max(torch.abs(noisy_waveform)) + 1e-8
+    noisy_waveform = noisy_waveform / max_amp
 
     # Resample if needed
     if sr != target_sr:
@@ -67,9 +68,14 @@ def infer_local_audio(noisy_wav_path, model_path, output_path="cleaned_result_lo
     mix_real = (complex_spectrogram.real / normalize_factor).unsqueeze(0)
     mix_imag = (complex_spectrogram.imag / normalize_factor).unsqueeze(0)
     
-    # 4. Predict
+    # 4. Predict Complex Mask
     with torch.no_grad():
-        pred_clean_real, pred_clean_imag = model(mix_real, mix_imag)
+        mask_real, mask_imag = model(mix_real, mix_imag)
+        
+    # Apply Complex Ratio Mask to the mixture
+    pred_clean_real = mask_real * mix_real - mask_imag * mix_imag
+    pred_clean_imag = mask_real * mix_imag + mask_imag * mix_real
+
     
     # Denormalize
     pred_clean_real = pred_clean_real.squeeze(0) * normalize_factor
@@ -81,18 +87,17 @@ def infer_local_audio(noisy_wav_path, model_path, output_path="cleaned_result_lo
     # 6. Apply Inverse STFT
     cleaned_waveform = istft(cleaned_complex).squeeze(0).numpy()
 
-    # FINAL BOOST: Make the output audible (Normalization)
-    max_out = np.max(np.abs(cleaned_waveform)) + 1e-8
-    cleaned_waveform = cleaned_waveform / max_out
+    # Restore Original Volume
+    cleaned_waveform = cleaned_waveform * max_amp.numpy()
 
     # SAVE using soundfile instead of torchaudio
     print(f"Saving DCUNet cleaned audio to {output_path}")
     sf.write(output_path, cleaned_waveform, target_sr)
 
 if __name__ == "__main__":
-    FINAL_MODEL_FILE = "dcunet_epoch_120.pth"
+    FINAL_MODEL_FILE = "complex_checkpoints/best_dcunet.pth"
     infer_local_audio(
-        noisy_wav_path="test_audio/z4.wav", 
+        noisy_wav_path="test_audio/my1.wav", 
         model_path=FINAL_MODEL_FILE, 
-        output_path="test_audio/z4_clean.wav"
+        output_path="test_audio/my1_clean1.wav"
     )

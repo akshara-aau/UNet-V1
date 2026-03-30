@@ -18,23 +18,25 @@ echo "Running on node(s): $SLURM_NODELIST"
 
 # 2. Define the project directory
 # Adjust this to where you uploaded the files on the server!
-WORKDIR="/ceph/home/student.aau.dk/gr27bw/P8-AVS-WNS/mini-project-unet2"
+WORKDIR="/ceph/home/student.aau.dk/gr27bw/P8-AVS-WNS/mini-project-unet2/mini-project-unet3"
 cd $WORKDIR
 
-# 3. Activate Virtual Environment
-# Assuming you have a virtual environment called 'unet_env' in your working directory
-# If you don't, create one first using: python -m venv unet_env && source unet_env/bin/activate && pip install torch torchaudio tqdm matplotlib
-if [ -f "$WORKDIR/unet_env/bin/activate" ]; then
-    echo "Activating virtual environment..."
-    source $WORKDIR/unet_env/bin/activate
+# 3. Activate Virtual Environment from the parent directory
+# Since we created a new nested folder (unet3), we can just re-use the python
+# environment you already built in the old unet2 folder!
+if [ -f "../unet_env/bin/activate" ]; then
+    echo "Activating virtual environment from parent unet2 folder..."
+    source ../unet_env/bin/activate
 else
     echo "WARNING: Virtual environment 'unet_env' not found. Ensure required modules are installed."
 fi
 
-# 4. Optional: Download Dataset if it doesn't exist
-# This will call the bash script we wrote earlier. 
-# It exits safely if 'MS-SNSD' folder already exists.
-bash download_dataset.sh "./MS-SNSD"
+# 4. Link the Training Dataset
+# This creates a symbolic link to the MS-SNSD dataset located one directory up!
+if [ ! -d "./MS-SNSD" ]; then
+    echo "Creating a symbolic link to the dataset in the parent folder..."
+    ln -s ../MS-SNSD ./MS-SNSD
+fi
 
 # 5. Run the training script
 echo "Starting multi-task U-Net training..."
