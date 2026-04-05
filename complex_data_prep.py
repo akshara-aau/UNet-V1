@@ -2,29 +2,31 @@ import os
 import torch
 import torchaudio
 import random
+import soundfile as sf
+import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 
 class ComplexSpeechDataset(Dataset):
-    #constructor
-    def __init__(self, clean_dir, noise_dir, snr_range=(-5, 15), sample_rate=16000, 
-                 n_fft=512, hop_length=256, max_duration_sec=4.0):  # 4 second audio clips; n_fft=512, hop_length=256 parameters for stft; snr between -5 to 15db, fixed sampling rate of 16Khz
+    def __init__(self, clean_dir, noise_dir, rir_dir=None, snr_range=(-5, 15), sample_rate=16000, 
+                 n_fft=512, hop_length=256, max_duration_sec=4.0):
         super().__init__()
-        # get audios files from clean and noise directory ; convert all .wav files path into list
         self.clean_files = list(Path(clean_dir).rglob("*.wav"))
         self.noise_files = list(Path(noise_dir).rglob("*.wav"))
+        self.rir_files = []
+        if rir_dir and os.path.exists(rir_dir):
+            self.rir_files = list(Path(rir_dir).rglob("*.wav"))
         
         self.snr_range = snr_range
         self.sample_rate = sample_rate
         self.max_length = int(sample_rate * max_duration_sec) 
-        # returning complex stft; [channel0=real, channel1=imaginary, frequency bins, time frames]; model to learn phase and magnitude
         self.stft = torchaudio.transforms.Spectrogram(
             n_fft=n_fft, hop_length=hop_length, power=None, normalized=True
         )
-    # tell pyTorch how many samples are in the dataset; it will decide the batch
+
     def __len__(self):
         return len(self.clean_files)
-    # return the length standardise tensor, either pad or truncate
+
     def _pad_or_truncate(self, waveform):
         if waveform.shape[1] > self.max_length:
             start = random.randint(0, waveform.shape[1] - self.max_length)
@@ -35,47 +37,56 @@ class ComplexSpeechDataset(Dataset):
         return waveform
 
     def _load_audio(self, path):
-        waveform, sr = torchaudio.load(path)
-        if sr != self.sample_rate:
-            waveform = torchaudio.transforms.Resample(sr, self.sample_rate)(waveform)
-        if waveform.shape[0] > 1:
-            waveform = torch.mean(waveform, dim=0, keepdim=True)
-            
-        # Independent waveform peak-norm before mixing
-        max_amp = torch.max(torch.abs(waveform)) + 1e-8
-        waveform = waveform / max_amp
-            
-        return self._pad_or_truncate(waveform)
-    # apply reverbration to clean speech ; faking room echo ; egenralize to real spaces
+        # 🚀 HIGH-STABILITY LOADING
+        for _ in range(3):  # Try up to 3 times with different random files if we hit a silent one
+            try:
+                data, sr = sf.read(path, dtype='float32')
+                if data.ndim == 1:
+                    waveform = torch.from_numpy(data).unsqueeze(0)
+                else:
+                    waveform = torch.from_numpy(data.T)
+                    
+                if sr != self.sample_rate:
+                    waveform = torchaudio.transforms.Resample(sr, self.sample_rate)(waveform)
+                if waveform.shape[0] > 1:
+                    waveform = torch.mean(waveform, dim=0, keepdim=True)
+                
+                # Check for "Dead/Silent" audio to prevent NaN loss
+                max_amp = torch.max(torch.abs(waveform))
+                if max_amp < 1e-6:
+                    # If file is silent, pick a random new one and try again
+                    path = random.choice(self.clean_files)
+                    continue
+
+                waveform = waveform / (max_amp + 1e-8)
+                return self._pad_or_truncate(waveform)
+            except:
+                path = random.choice(self.clean_files)
+        
+        return torch.zeros((1, self.max_length))
+
     def _apply_reverb(self, waveform):
-        # 50% chance to apply reverb
-        if random.random() < 0.5:
-            # Generate random synthetic RT60 Room Impulse Response (0.1s to 0.6s)
-            rt60 = random.uniform(0.1, 0.6)
-            rir_length = int(self.sample_rate * rt60)
-            
-            # White noise decaying exponentially to -60dB
-            decay = 6.908 / rir_length
-            envelope = torch.exp(-decay * torch.arange(rir_length, dtype=torch.float32))
-            rir = torch.randn(1, rir_length) * envelope
-            
-            # Normalize RIR so it doesn't change overall volume drastically
-            rir = rir / torch.norm(rir, p=2)
-            
-            # Apply FFT Convolve
-            reverbed = torchaudio.functional.fftconvolve(waveform, rir)
-            
-            # Trim the convolution tail
-            waveform = reverbed[:, :waveform.shape[1]]
+        if self.rir_files and random.random() < 0.5:
+            try:
+                rir_path = random.choice(self.rir_files)
+                data, sr = sf.read(rir_path, dtype='float32')
+                rir_waveform = torch.from_numpy(data.T) if data.ndim > 1 else torch.from_numpy(data).unsqueeze(0)
+                if sr != self.sample_rate:
+                    rir_waveform = torchaudio.transforms.Resample(sr, self.sample_rate)(rir_waveform)
+                rir_waveform = rir_waveform[:1, :]
+                rir_waveform = rir_waveform / (torch.max(torch.abs(rir_waveform)) + 1e-8)
+                reverbed = torchaudio.functional.fftconvolve(waveform, rir_waveform)
+                waveform = reverbed[:, :waveform.shape[1]]
+            except:
+                pass
         return waveform
 
     def __getitem__(self, idx):
         clean_waveform_dry = self._load_audio(self.clean_files[idx])
+        # Also ensure noise isn't silent
         noise_waveform = self._load_audio(random.choice(self.noise_files))
         
-        # Apply synthetic reverb to the clean speech before mixing
         reverbed_clean = self._apply_reverb(clean_waveform_dry)
-        
         snr_db = random.uniform(*self.snr_range)
         eps = 1e-8
         
@@ -88,35 +99,28 @@ class ComplexSpeechDataset(Dataset):
         
         mixture = reverbed_clean + scaled_noise
         
-        # Unconditional peak-normalization for the mixture to guarantee consistent ML input scale
+        # Unconditional normalization
         max_val = torch.max(torch.abs(mixture)) + eps
         mixture = mixture / max_val
         clean_waveform_dry = clean_waveform_dry / max_val
-
-        # Get Complex Tensors [Channels, Freq, Time]
+        
         mix_stft = self.stft(mixture)
         clean_stft = self.stft(clean_waveform_dry)
         
-        # We must separate the complex output into Real and Imaginary for the PyTorch Conv layers!
-        # Tanh layers in the model want data between -1 and 1. 
-        # For simplicity in this demo class, we will normalize the spectrograms.
         normalize_factor = torch.max(torch.abs(mix_stft)) + eps
-        
         mix_real = mix_stft.real / normalize_factor
         mix_imag = mix_stft.imag / normalize_factor
-        
         clean_real = clean_stft.real / normalize_factor
         clean_imag = clean_stft.imag / normalize_factor
         
-        # Add channel dimensions manually so it is [1, Freq, Time]
         return mix_real, mix_imag, clean_real, clean_imag
 
-def get_dataloaders(clean_dir, noise_dir, batch_size=16, snr_range=(-5, 15)):
-    dataset = ComplexSpeechDataset(clean_dir, noise_dir, snr_range)
+def get_dataloaders(clean_dir, noise_dir, rir_dir=None, batch_size=16, snr_range=(-5, 15)):
+    dataset = ComplexSpeechDataset(clean_dir, noise_dir, rir_dir, snr_range)
     train_size = int(0.9 * len(dataset))
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=8)
     return train_loader, val_loader

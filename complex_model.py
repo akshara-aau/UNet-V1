@@ -28,9 +28,10 @@ class ComplexConvTranspose2d(nn.Module):
         self.conv_t_imag = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding)
 
     def forward(self, real, imag):
-        # Complex conjugate transpose math: (U^T - iV^T)(X + iY)
-        out_real = self.conv_t_real(real) + self.conv_t_imag(imag)
-        out_imag = self.conv_t_real(imag) - self.conv_t_imag(real)
+        # Matching exact sign convention of forward ComplexConv2d
+        # to guarantee Skip-Connection phase geometry doesn't destructively interfere
+        out_real = self.conv_t_real(real) - self.conv_t_imag(imag)
+        out_imag = self.conv_t_real(imag) + self.conv_t_imag(real)
         return out_real, out_imag
 
 class ComplexBatchNorm2d(nn.Module):
@@ -111,20 +112,21 @@ class ComplexUp(nn.Module):
 
 class DeepComplexUNet(nn.Module):
     """
-    State-of-the-Art Deep Complex U-Net (DCUNet)
-    Reconstructs both Magnitude AND Phase of the audio.
+    DNS-Challenge Middle-Ground Architecture (32-Base / 5-Block)
+    High capacity extraction with reliable 512-channel VRAM limits.
     """
     def __init__(self, n_channels=1):
         super(DeepComplexUNet, self).__init__()
         
-        # Encoder
+        # Encoder (4 Downsampling levels = 5 Blocks Total)
+        # Starting at 32 for maximum DNS feature extraction!
         self.inc = ComplexDoubleConv(n_channels, 32)
         self.down1 = ComplexDown(32, 64)
         self.down2 = ComplexDown(64, 128)
         self.down3 = ComplexDown(128, 256)
         self.down4 = ComplexDown(256, 512)
         
-        # Decoder (Single Head, because predicting complex mask naturally separates noise/speech)
+        # Decoder (Massive Depth, Symmetric Scaling)
         self.up1 = ComplexUp(512, 256)
         self.up2 = ComplexUp(256, 128)
         self.up3 = ComplexUp(128, 64)
@@ -134,29 +136,27 @@ class DeepComplexUNet(nn.Module):
         self.out_conv = ComplexConv2d(32, 1, kernel_size=1, padding=0)
 
     def forward(self, real, imag):
-        # Guarantee 4D shape [Batch, Channels, Freq, Time]
+        # Guarantee 4D shape
         if real.dim() == 3:
             real = real.unsqueeze(1)
             imag = imag.unsqueeze(1)
             
         # Encoder
-        r1, i1 = self.inc(real, imag)
-        r2, i2 = self.down1(r1, i1)
-        r3, i3 = self.down2(r2, i2)
-        r4, i4 = self.down3(r3, i3)
-        r_latent, i_latent = self.down4(r4, i4)
+        r1, i1 = self.inc(real, imag)     # Output: 32
+        r2, i2 = self.down1(r1, i1)       # Output: 64
+        r3, i3 = self.down2(r2, i2)       # Output: 128
+        r4, i4 = self.down3(r3, i3)       # Output: 256
+        r_latent, i_latent = self.down4(r4, i4) # Output: 512
         
-        # Decoder + Skip Connections
-        r_up1, i_up1 = self.up1(r4, i4, r_latent, i_latent)
-        r_up2, i_up2 = self.up2(r3, i3, r_up1, i_up1)
-        r_up3, i_up3 = self.up3(r2, i2, r_up2, i_up2)
-        r_up4, i_up4 = self.up4(r1, i1, r_up3, i_up3)
+        # Decoder Reconstructions
+        r_up1, i_up1 = self.up1(r4, i4, r_latent, i_latent) # 512 -> 256
+        r_up2, i_up2 = self.up2(r3, i3, r_up1, i_up1)       # 256 -> 128
+        r_up3, i_up3 = self.up3(r2, i2, r_up2, i_up2)       # 128 -> 64
+        r_up4, i_up4 = self.up4(r1, i1, r_up3, i_up3)       # 64 -> 32
         
         # Final Complex Mask prediction
         mask_real, mask_imag = self.out_conv(r_up4, i_up4)
         
-        # Instead of Sigmoid (which is only for magnitude 0 to 1), 
-        # complex masks use Tanh to bound between -1 and 1
         mask_real = torch.tanh(mask_real)
         mask_imag = torch.tanh(mask_imag)
         

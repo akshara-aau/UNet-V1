@@ -95,9 +95,9 @@ def infer_local_audio(noisy_wav_path, model_path, output_path="cleaned_result_lo
     sf.write(output_path, cleaned_waveform, target_sr)
 
 if __name__ == "__main__":
-    FINAL_MODEL_FILE = "complex_checkpoints/best_dcunet.pth"
+    FINAL_MODEL_FILE = "complex_checkpoints/dcunet_epoch_10.pth"
     infer_local_audio(
-        noisy_wav_path="test_audio/my1.wav", 
+        noisy_wav_path="test_audio/phone-norm.wav", 
         model_path=FINAL_MODEL_FILE, 
-        output_path="test_audio/my1_clean1.wav"
+        output_path="test_audio_DNS_training/phone-norm-clean.wav"
     )
