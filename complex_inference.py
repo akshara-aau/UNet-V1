@@ -1,5 +1,7 @@
 import torch
 import torchaudio
+import soundfile as sf
+import os
 from complex_model import DeepComplexUNet
 
 def infer_complex_audio(noisy_wav_path, model_path, output_path="complex_cleaned_result.wav"):
@@ -25,7 +27,17 @@ def infer_complex_audio(noisy_wav_path, model_path, output_path="complex_cleaned
     hop_length = 256
     
     # Load and prep audio
-    noisy_waveform, sr = torchaudio.load(noisy_wav_path)
+    if not os.path.exists(noisy_wav_path):
+        print(f"Error: File not found: {noisy_wav_path}")
+        return
+
+    data, sr = sf.read(noisy_wav_path, dtype='float32')
+    if data.ndim == 1:
+        noisy_waveform = torch.from_numpy(data).unsqueeze(0)
+    else:
+        # soundfile returns [Time, Channels], PyTorch needs [Channels, Time]
+        noisy_waveform = torch.from_numpy(data.T)
+    
     if sr != sample_rate:
         noisy_waveform = torchaudio.transforms.Resample(sr, sample_rate)(noisy_waveform)
     
@@ -86,41 +98,43 @@ def infer_complex_audio(noisy_wav_path, model_path, output_path="complex_cleaned
     # Restore Original Volume
     cleaned_waveform = cleaned_waveform * max_amp
 
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(output_path), exist_ok=True) if os.path.dirname(output_path) else None
+
     print(f"Saving DCUNet cleaned audio to {output_path}")
-    torchaudio.save(output_path, cleaned_waveform, sample_rate)
+    sf.write(output_path, cleaned_waveform.squeeze(0).cpu().numpy(), sample_rate)
 
 if __name__ == "__main__":
-    # Test 1
-    infer_complex_audio(
-       noisy_wav_path="noise_mixi.wav", 
-       model_path="./complex_checkpoints/dcunet_epoch_100.pth", 
-       output_path="cleaned_noise_mixi.wav"
-    )
+    # 🚀 CONFIGURATION
+    MODEL_WEIGHTS = "./complex_checkpoints/latest_checkpoint.pth"
+    INPUT_DIR = "test123"
+    OUTPUT_DIR = "test123" # Saving back into the same folder for convenience
 
-    # Test 2
-    infer_complex_audio(
-       noisy_wav_path="noise_baby.wav", 
-       model_path="./complex_checkpoints/dcunet_epoch_100.pth", 
-       output_path="cleaned_noise_baby.wav"
-    )
+    if not os.path.exists(MODEL_WEIGHTS):
+        # Fallback to epoch 70 if latest isn't found
+        MODEL_WEIGHTS = "./complex_checkpoints/dcunet_epoch_120.pth"
 
-    # Test 3
-    infer_complex_audio(
-       noisy_wav_path="wind_noise1.wav", 
-       model_path="./complex_checkpoints/dcunet_epoch_100.pth", 
-       output_path="cleaned_wind_noise1.wav"
-    )
+    print(f"📡 Loading model from: {MODEL_WEIGHTS}")
+    
+    # 🔍 Find all .wav files in the input directory
+    files = [f for f in os.listdir(INPUT_DIR) if f.endswith(".wav") and not f.startswith("cleaned_")]
+    
+    if not files:
+        print(f"⚠️ No .wav files found in {INPUT_DIR}")
+    else:
+        print(f"🏗️  Cleaning {len(files)} files...")
 
-    # Test 4
-    infer_complex_audio(
-       noisy_wav_path="wind_noise2.wav", 
-       model_path="./complex_checkpoints/dcunet_epoch_100.pth", 
-       output_path="cleaned_wind_noise2.wav"
-    )
+        for file_name in files:
+            input_path = os.path.join(INPUT_DIR, file_name)
+            # Create output name: cleaned_input.wav -> cleaned_input_120.wav
+            output_name = f"cleaned_{os.path.splitext(file_name)[0]}_120.wav"
+            output_path = os.path.join(OUTPUT_DIR, output_name)
+            
+            print(f"✨ Processing: {file_name} -> {output_name}")
+            infer_complex_audio(
+               noisy_wav_path=input_path, 
+               model_path=MODEL_WEIGHTS, 
+               output_path=output_path
+            )
 
-    # Test 5
-    infer_complex_audio(
-       noisy_wav_path="wind_noise3.wav", 
-       model_path="./complex_checkpoints/dcunet_epoch_100.pth", 
-       output_path="cleaned_wind_noise3.wav"
-    )
+        print("\n✅ All files processed successfully!")

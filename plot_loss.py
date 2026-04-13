@@ -31,10 +31,13 @@ def plot_training_history(log_path="complex_checkpoints/training_log.csv", save_
     best_val_idx = df['Val_wSDR_Loss'].idxmin()
     best_epoch = df['Epoch'].iloc[best_val_idx]
     final_epoch = df['Epoch'].iloc[-1]
+    print("best_val_idx--",best_val_idx)
+    print("best_epoch--",best_epoch)
+    print("final_epoch--",final_epoch)
     
     print("\n--- Overfitting Analysis ---")
     print(f"Best Configuration: Epoch {best_epoch} (Val Loss: {df['Val_wSDR_Loss'].iloc[best_val_idx]:.4f})")
-    
+    # if the improvement has happend long before its overfitting
     if (final_epoch - best_epoch) > 10:
         print("⚠️ OVERFITTING DETECTED: Your model hasn't improved its validation score in over 10 epochs,")
         print("but the Train Loss is likely still dropping. It is memorizing the specific audio mixes!")
