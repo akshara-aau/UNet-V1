@@ -3,10 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class ComplexConv2d(nn.Module):
-    """
-    Complex Convolution using standard real-valued Conv2D blocks.
-    Preserves strict phase weight sharing between real and imaginary paths.
-    """
+
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
         super(ComplexConv2d, self).__init__()
         self.conv_real = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
@@ -18,10 +15,7 @@ class ComplexConv2d(nn.Module):
         return out_real, out_imag
 
 class ComplexConvTranspose2d(nn.Module):
-    """
-    Complex Transposed Convolution for the Decoder.
-    Applies the mathematical Complex Adjoint (Conjugate Transpose) operation.
-    """
+
     def __init__(self, in_channels, out_channels, kernel_size=2, stride=2, padding=0):
         super(ComplexConvTranspose2d, self).__init__()
         self.conv_t_real = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding)
@@ -35,7 +29,6 @@ class ComplexConvTranspose2d(nn.Module):
         return out_real, out_imag
 
 class ComplexBatchNorm2d(nn.Module):
-    """Simplified Complex Batch Normalization"""
     def __init__(self, num_features):
         super(ComplexBatchNorm2d, self).__init__()
         self.bn_real = nn.BatchNorm2d(num_features)
@@ -74,10 +67,9 @@ class ComplexDoubleConv(nn.Module):
         return self.relu2(r2, i2)
 
 class ComplexDown(nn.Module):
-    """
-    Strided Complex Convolution followed by Double Complex Convolution.
-    (Replaces MaxPool to prevent destruction of phase structure)
-    """
+
+
+    # instead of maxpooling we here used strided convolution to downsample the feature maps to avoid loss of phase information
     def __init__(self, in_channels, out_channels):
         super().__init__()
         self.downsample = ComplexConv2d(in_channels, in_channels, kernel_size=2, stride=2, padding=0)
@@ -88,7 +80,6 @@ class ComplexDown(nn.Module):
         return self.double_conv(d_real, d_imag)
 
 class ComplexUp(nn.Module):
-    """Complex Upscaling and Concatenation (Skip Connections)"""
     def __init__(self, in_channels, out_channels):
         super().__init__()
         self.up = ComplexConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
@@ -111,15 +102,11 @@ class ComplexUp(nn.Module):
         return self.conv(r_cat, i_cat)
 
 class DeepComplexUNet(nn.Module):
-    """
-    DNS-Challenge Middle-Ground Architecture (32-Base / 5-Block)
-    High capacity extraction with reliable 512-channel VRAM limits.
-    """
+ 
     def __init__(self, n_channels=1):
         super(DeepComplexUNet, self).__init__()
         
         # Encoder (4 Downsampling levels = 5 Blocks Total)
-        # Starting at 32 for maximum DNS feature extraction!
         self.inc = ComplexDoubleConv(n_channels, 32)
         self.down1 = ComplexDown(32, 64)
         self.down2 = ComplexDown(64, 128)
@@ -136,7 +123,6 @@ class DeepComplexUNet(nn.Module):
         self.out_conv = ComplexConv2d(32, 1, kernel_size=1, padding=0)
 
     def forward(self, real, imag):
-        # Guarantee 4D shape
         if real.dim() == 3:
             real = real.unsqueeze(1)
             imag = imag.unsqueeze(1)
