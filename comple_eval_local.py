@@ -156,7 +156,7 @@ def evaluate():
     df.to_csv(OUTPUT_CSV, index=False)
     
     print("\n" + "="*30)
-    print(" FINAL RESULTS (IMPROVED)")
+    print(" The finsl result")
     print("="*30)
     print(f" Avg STOI:  {df['stoi'].mean():.4f}")
     print(f"Avg SDR:   {df['sdr'].mean():.2f} dB")

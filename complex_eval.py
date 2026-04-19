@@ -5,7 +5,6 @@ import pandas as pd
 import soundfile as sf
 from tqdm import tqdm
 
-# Cleanly handle PESQ installation dependency
 try:
     from pesq import pesq
     HAS_PESQ = True
@@ -15,7 +14,6 @@ except ImportError:
 from pystoi import stoi
 from complex_model import DeepComplexUNet
 
-# --- CONFIGURATION (Must match your Training exactly!) ---
 N_FFT = 512
 HOP_LENGTH = 256
 TARGET_SR = 16000
@@ -37,15 +35,13 @@ def evaluate():
     model_path = "./complex_checkpoints/dcunet_epoch_60.pth"
     if not os.path.exists(model_path):
         model_path = "./complex_checkpoints/dcunet_epoch_120.pth"
-    
     model, device = load_model(model_path)
     print(f"📡 Evaluating: {model_path} with N_FFT={N_FFT}")
-    
     files = [f for f in os.listdir(TEST_NOISY_DIR) if f.endswith(".wav")]
     results = []
     window = torch.hann_window(N_FFT).to(device)
 
-    print(f"🚀 Processing {len(files)} test files...")
+    print(f"Processing {len(files)} test files...")
     for f_name in tqdm(files):
         # 1. Load Audio (Bypass torchaudio)
         noisy_np, sr = sf.read(os.path.join(TEST_NOISY_DIR, f_name))
@@ -57,7 +53,6 @@ def evaluate():
 
         noisy_wav = torch.from_numpy(noisy_np).float().to(device)
         if noisy_wav.ndim == 1: noisy_wav = noisy_wav.unsqueeze(0)
-        
         # --- IMPROVEMENT: Normalisation ---
         max_amp = torch.max(torch.abs(noisy_wav)) + 1e-8
         noisy_wav_norm = noisy_wav / max_amp
@@ -109,14 +104,13 @@ def evaluate():
     # 5. Save and Report
     df = pd.DataFrame(results)
     df.to_csv(OUTPUT_CSV, index=False)
-    
     print("\n" + "="*30)
-    print("📊 FINAL RESULTS (IMPROVED)")
+    print("The final resut")
     print("="*30)
-    print(f"✅ Avg STOI:  {df['stoi'].mean():.4f}")
-    print(f"✅ Avg SDR:   {df['sdr'].mean():.2f} dB")
+    print(f"Avg STOI:  {df['stoi'].mean():.4f}")
+    print(f"Avg SDR:   {df['sdr'].mean():.2f} dB")
     if HAS_PESQ and "pesq" in df:
-        print(f"✅ Avg PESQ:  {df['pesq'].mean():.4f}")
+        print(f"Avg PESQ:  {df['pesq'].mean():.4f}")
     print("="*30)
 
 if __name__ == "__main__":

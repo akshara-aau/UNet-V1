@@ -37,7 +37,6 @@ class ComplexSpeechDataset(Dataset):
         return waveform
 
     def _load_audio(self, path):
-        # 🚀 HIGH-STABILITY LOADING
         for _ in range(3):  # Try up to 3 times with different random files if we hit a silent one
             try:
                 data, sr = sf.read(path, dtype='float32')

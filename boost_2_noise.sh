@@ -9,7 +9,7 @@ cd $WORKDIR
 OUTPUT_PATH="./datasets_fullband"
 AZURE_URL="https://dns4public.blob.core.windows.net/dns4archive/datasets_fullband"
 
-# 🛰️ Focus: The remaining noise blobs
+#  Focus: The remaining noise blobs
 BLOB_NAMES=(
     "noise_fullband/datasets_fullband.noise_fullband.audioset_001.tar.bz2"
     "noise_fullband/datasets_fullband.noise_fullband.audioset_002.tar.bz2"
@@ -17,13 +17,13 @@ BLOB_NAMES=(
     "noise_fullband/datasets_fullband.noise_fullband.freesound_001.tar.bz2"
 )
 
-echo "🛰️ Job 2: Starting Noise Boost (Audioset 001-002, Freesound) [$(date)]"
+echo " Job 2: Starting Noise Boost (Audioset 001-002, Freesound) [$(date)]"
 
 for BLOB in "${BLOB_NAMES[@]}"
 do
-    echo "⬇️ [$(date '+%H:%M:%S')] Processing: $BLOB"
+    echo " [$(date '+%H:%M:%S')] Processing: $BLOB"
     if [ -f "$OUTPUT_PATH/${BLOB}.done" ]; then
-        echo "✅ Already completed"
+        echo " Already completed"
         continue
     fi
     curl -Lf "$AZURE_URL/$BLOB" | tar -C "$OUTPUT_PATH" --strip-components=1 -f - -x -j && touch "$OUTPUT_PATH/${BLOB}.done"

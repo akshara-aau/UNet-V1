@@ -105,36 +105,31 @@ def infer_complex_audio(noisy_wav_path, model_path, output_path="complex_cleaned
     sf.write(output_path, cleaned_waveform.squeeze(0).cpu().numpy(), sample_rate)
 
 if __name__ == "__main__":
-    # 🚀 CONFIGURATION
     MODEL_WEIGHTS = "./complex_checkpoints/latest_checkpoint.pth"
     INPUT_DIR = "test123"
     OUTPUT_DIR = "test123" # Saving back into the same folder for convenience
 
     if not os.path.exists(MODEL_WEIGHTS):
-        # Fallback to epoch 70 if latest isn't found
         MODEL_WEIGHTS = "./complex_checkpoints/dcunet_epoch_120.pth"
 
-    print(f"📡 Loading model from: {MODEL_WEIGHTS}")
     
-    # 🔍 Find all .wav files in the input directory
     files = [f for f in os.listdir(INPUT_DIR) if f.endswith(".wav") and not f.startswith("cleaned_")]
     
     if not files:
-        print(f"⚠️ No .wav files found in {INPUT_DIR}")
+        print(f"No .wav files found in {INPUT_DIR}")
     else:
-        print(f"🏗️  Cleaning {len(files)} files...")
+        print(f"Cleaning {len(files)} files...")
 
         for file_name in files:
             input_path = os.path.join(INPUT_DIR, file_name)
-            # Create output name: cleaned_input.wav -> cleaned_input_120.wav
             output_name = f"cleaned_{os.path.splitext(file_name)[0]}_120.wav"
             output_path = os.path.join(OUTPUT_DIR, output_name)
             
-            print(f"✨ Processing: {file_name} -> {output_name}")
+            print(f"Processing: {file_name} -> {output_name}")
             infer_complex_audio(
                noisy_wav_path=input_path, 
                model_path=MODEL_WEIGHTS, 
                output_path=output_path
             )
 
-        print("\n✅ All files processed successfully!")
+        print("\nAll files processed successfully!")

@@ -9,12 +9,12 @@ cd $WORKDIR
 OUTPUT_PATH="./datasets_fullband"
 AZURE_URL="https://dns4public.blob.core.windows.net/dns4archive/datasets_fullband"
 
-# 🛰️ Focus: The massive Audioset 000 (Current Bottleneck)
+#  Focus: The massive Audioset 000 (Current Bottleneck)
 BLOB="noise_fullband/datasets_fullband.noise_fullband.audioset_000.tar.bz2"
 
-echo "🛰️ Job 1: Starting Audioset 000 Boost [$(date)]"
+echo " Job 1: Starting Audioset 000 Boost [$(date)]"
 if [ -f "$OUTPUT_PATH/${BLOB}.done" ]; then
-    echo "✅ Already completed"
+    echo " Already completed"
 else
     curl -Lf "$AZURE_URL/$BLOB" | tar -C "$OUTPUT_PATH" --strip-components=1 -f - -x -j && touch "$OUTPUT_PATH/${BLOB}.done"
 fi

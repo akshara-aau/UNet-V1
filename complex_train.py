@@ -10,7 +10,7 @@ import torchaudio
 from complex_model import DeepComplexUNet
 from complex_data_prep import get_dataloaders
 
-# --- 🛰️ TARGET CLUSTER CONFIGURATION ---
+# --- TARGET CLUSTER CONFIGURATION ---
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 SAVE_DIR = "./complex_checkpoints"
 
@@ -93,7 +93,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, epoch):
         
         loss = criterion(mix_real, mix_imag, clean_real, clean_imag, pred_clean_real, pred_clean_imag)
         
-        # 🚀 If loss is still NaN, skip this batch entirely
+        # If loss is still NaN, skip this batch entirely
         if torch.isnan(loss) or loss.item() == 0:
             continue
             
@@ -134,7 +134,7 @@ def save_checkpoint(model, optimizer, scheduler, epoch, best_val_loss, filename)
     torch.save(checkpoint, filename)
 
 def main():
-    print(f"📡 DNS TRAINING: Using full dataset from: {DATA_BASE}")
+    print(f"DNS TRAINING: Using full dataset from: {DATA_BASE}")
     os.makedirs(SAVE_DIR, exist_ok=True)
     start_epoch = 0
     checkpoint_path = None
@@ -166,11 +166,9 @@ def main():
         start_epoch = checkpoint['epoch'] + 1
         best_val_loss = checkpoint.get('best_val_loss', float('inf'))
         
-        # 🎯 FORCE OVERRIDE: Update the LR to our new fine-tuning constant
         for param_group in optimizer.param_groups:
             param_group['lr'] = LEARNING_RATE
 
-    print("🛰️ Initializing Dynamic Real-World Data Pipeline...")
     train_loader, val_loader = get_dataloaders(CLEAN_DIR, NOISE_DIR, RIR_DIR, batch_size=BATCH_SIZE, snr_range=(-15, 10))
     
     log_file = os.path.join(SAVE_DIR, "training_log.csv")
@@ -178,11 +176,9 @@ def main():
         with open(log_file, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["Epoch", "Train_wSDR_Loss", "Val_wSDR_Loss"])
-
     for epoch in range(start_epoch, NUM_EPOCHS):
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"\n🚀 [Epoch {epoch+1}/120] Current Learning Rate: {current_lr:.2e}")
-        
+        print(f"\n[Epoch {epoch+1}/120] Current Learning Rate: {current_lr:.2e}")
         avg_loss = train_one_epoch(model, train_loader, optimizer, criterion, epoch)
         val_loss = validate_one_epoch(model, val_loader, criterion)
         print(f"Epoch [{epoch+1}/{NUM_EPOCHS}] wSDR Train: {avg_loss:.4f} | Val: {val_loss:.4f}")
@@ -193,12 +189,11 @@ def main():
         # 1. Save "latest" for every single epoch (Safety snapshot)
         latest_save_path = os.path.join(SAVE_DIR, "latest_checkpoint.pth")
         save_checkpoint(model, optimizer, scheduler, epoch, val_loss, latest_save_path)
-
         # 2. Save archival checkpoints every 10 epochs (History)
         if (epoch + 1) % 10 == 0:
             archive_path = os.path.join(SAVE_DIR, f"dcunet_epoch_{epoch+1}.pth")
             save_checkpoint(model, optimizer, scheduler, epoch, val_loss, archive_path)
-            print(f"🛰️ Archive checkpoint saved: {archive_path}")
+            print(f"Archive checkpoint saved: {archive_path}")
 
 if __name__ == "__main__":
     main()
