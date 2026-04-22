@@ -10,7 +10,7 @@ def plot_training_history(log_path="complex_checkpoints/training_log.csv", save_
     plt.figure(figsize=(10, 6))
     plt.plot(df['Epoch'], df['Train_wSDR_Loss'], label='Train wSDR Loss', linewidth=2, color='royalblue')
     plt.plot(df['Epoch'], df['Val_wSDR_Loss'], label='Validation wSDR Loss', linewidth=2, color='darkorange')
-    plt.title("Deep Complex U-Net Training Curve\n(Watch for Overfitting)", fontsize=14)
+    plt.title("Deep Complex U-Net Training Curve\n", fontsize=14)
     plt.xlabel("Epoch", fontsize=12)
     plt.ylabel("wSDR Loss (Lower is Better)", fontsize=12)
     plt.legend(fontsize=11)

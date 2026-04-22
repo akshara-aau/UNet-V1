@@ -72,7 +72,7 @@ class wSDRLoss(nn.Module):
         
         loss = - (alpha * s_target + (1 - alpha) * n_target)
         
-        # 🧪 FINAL SHIELD: Filter out any NaNs that managed to break through
+        #  FINAL SHIELD: Filter out any NaNs that managed to break through
         loss = loss[~torch.isnan(loss)]
         if loss.numel() == 0:
             return torch.tensor(0.0, device=mix_real.device, requires_grad=True)
