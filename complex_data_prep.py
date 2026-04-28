@@ -8,11 +8,22 @@ from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 
 class ComplexSpeechDataset(Dataset):
-    def __init__(self, clean_dir, noise_dir, rir_dir=None, snr_range=(-5, 15), sample_rate=16000, 
-                 n_fft=512, hop_length=256, max_duration_sec=4.0):
+    def __init__(self, clean_dir, wind_dir, general_dir, rir_dir=None, snr_range=(-5, 15), sample_rate=16000, 
+                 n_fft=512, hop_length=256, max_duration_sec=4.0, max_files=None):
         super().__init__()
         self.clean_files = list(Path(clean_dir).rglob("*.wav"))
-        self.noise_files = list(Path(noise_dir).rglob("*.wav"))
+        
+        # Subset dataset for faster transfer learning
+        if max_files and len(self.clean_files) > max_files:
+            self.clean_files = random.sample(self.clean_files, max_files)
+            print(f"Dataset subset to {max_files} clean files for transfer learning.")
+
+        self.wind_files = list(Path(wind_dir).rglob("*.wav"))
+        self.general_files = list(Path(general_dir).rglob("*.wav"))
+        
+        if len(self.wind_files) == 0:
+            print(f" No wind files found in {wind_dir}. Using general noise as fallback.")
+            self.wind_files = self.general_files
         self.rir_files = []
         if rir_dir and os.path.exists(rir_dir):
             self.rir_files = list(Path(rir_dir).rglob("*.wav"))
@@ -82,8 +93,14 @@ class ComplexSpeechDataset(Dataset):
 
     def __getitem__(self, idx):
         clean_waveform_dry = self._load_audio(self.clean_files[idx])
-        # Also ensure noise isn't silent
-        noise_waveform = self._load_audio(random.choice(self.noise_files))
+        
+        # 90% wind noise , 10 gnrl noise
+        if random.random() < 0.90:
+            noise_path = random.choice(self.wind_files)
+        else:
+            noise_path = random.choice(self.general_files)
+            
+        noise_waveform = self._load_audio(noise_path)
         
         reverbed_clean = self._apply_reverb(clean_waveform_dry)
         snr_db = random.uniform(*self.snr_range)
@@ -114,8 +131,8 @@ class ComplexSpeechDataset(Dataset):
         
         return mix_real, mix_imag, clean_real, clean_imag
 
-def get_dataloaders(clean_dir, noise_dir, rir_dir=None, batch_size=16, snr_range=(-5, 15)):
-    dataset = ComplexSpeechDataset(clean_dir, noise_dir, rir_dir, snr_range)
+def get_dataloaders(clean_dir, wind_dir, general_dir, rir_dir=None, batch_size=16, snr_range=(-5, 15), max_files=None):
+    dataset = ComplexSpeechDataset(clean_dir, wind_dir, general_dir, rir_dir, snr_range, max_files=max_files)
     train_size = int(0.9 * len(dataset))
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])

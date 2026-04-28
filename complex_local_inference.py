@@ -68,13 +68,36 @@ def infer_local_audio(noisy_wav_path, model_path, output_path="cleaned_result_lo
     mix_real = (complex_spectrogram.real / normalize_factor).unsqueeze(0)
     mix_imag = (complex_spectrogram.imag / normalize_factor).unsqueeze(0)
     
-    # 4. Predict Complex Mask
+    # 4. Predict Complex Mask (with Smart Surgical Gate)
     with torch.no_grad():
+
+
+        # old
         mask_real, mask_imag = model(mix_real, mix_imag)
+        pred_clean_real = mask_real * mix_real - mask_imag * mix_imag
+        pred_clean_imag = mask_real * mix_imag + mask_imag * mix_real
+
+    #     mask_real, mask_imag = model(mix_real, mix_imag)
+
+    #     mask_real_gated = mask_real.clone()
+    #     mask_imag_gated = mask_imag.clone()
         
-    # Apply Complex Ratio Mask to the mixture
-    pred_clean_real = mask_real * mix_real - mask_imag * mix_imag
-    pred_clean_imag = mask_real * mix_imag + mask_imag * mix_real
+    #     # ZONE 1: THE RUMBLE (0 - 800Hz / Bin 0-26) -> Use 100% Specialist Model
+    #     # (Already set by the model prediction)
+
+    #     # ZONE 2: THE HISS (800Hz - 2000Hz / Bin 26-64) -> Use 50/50 Balanced Blend
+    #     # Helps remove wind whuffle while protecting core speech.
+    #     mask_real_gated[:, :, 26:64, :] = 0.5 * mask_real[:, :, 26:64, :] + 0.5 * 1.0
+    #     mask_imag_gated[:, :, 26:64, :] = 0.5 * mask_imag[:, :, 26:64, :] + 0.5 * 0.0
+
+    #     # ZONE 3: THE SPEECH (Above 2000Hz / Bin 64+) -> Use 100% Original Audio
+    #     # Guaranteed crystal clear baby cries and harmonics.
+    #     mask_real_gated[:, :, 64:, :] = 1.0 
+    #     mask_imag_gated[:, :, 64:, :] = 0.0 
+        
+    # # Apply the SMART GATED mask
+    # pred_clean_real = mask_real_gated * mix_real - mask_imag_gated * mix_imag
+    # pred_clean_imag = mask_real_gated * mix_imag + mask_imag_gated * mix_real
 
     
     # Denormalize
@@ -95,9 +118,17 @@ def infer_local_audio(noisy_wav_path, model_path, output_path="cleaned_result_lo
     sf.write(output_path, cleaned_waveform, target_sr)
 
 if __name__ == "__main__":
+    # FINAL_MODEL_FILE = "complex_check_wind/wind_specialist_best.pth"
+    # FINAL_MODEL_FILE = "complex_check_wind_phase/wind_specialist_best.pth"
+
     FINAL_MODEL_FILE = "complex_checkpoints/dcunet_epoch_120.pth"
+
     infer_local_audio(
-        noisy_wav_path="test_audio/input.wav", 
+        noisy_wav_path="test_audio/0.wav", 
         model_path=FINAL_MODEL_FILE, 
-        output_path="test_audio_DNS_120th_result/input-clean.wav"
+        # output_path="transfer_lerning_result/0-clean.wav"
+        # output_path="transfer_learning_result_phase/02-clean1.wav"
+
+        output_path="test_audio_DNS_120th_result/0abc-old-clean.wav"
+
     )

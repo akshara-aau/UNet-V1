@@ -2,6 +2,7 @@ import os
 import csv
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -10,19 +11,18 @@ import torchaudio
 from complex_model import DeepComplexUNet
 from complex_data_prep import get_dataloaders
 
-# --- TARGET CLUSTER CONFIGURATION ---
+# --- CLUSTER PATHS ---
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-SAVE_DIR = "./complex_checkpoints"
-
+SAVE_DIR = "./complex_checkpoints_wind"
 DATA_BASE = "/ceph/home/student.aau.dk/gr27bw/P8-AVS-WNS/mini-project-unet4/datasets_fullband"
 CLEAN_DIR = os.path.join(DATA_BASE, "clean_fullband")
 NOISE_DIR = os.path.join(DATA_BASE, "noise_fullband")
+WIND_DIR = "/ceph/home/student.aau.dk/gr27bw/P8-AVS-WNS/mini-project-unet4/wind-noise-TL/synthetic_wind_dataset"
 RIR_DIR = os.path.join(DATA_BASE, "impulse_responses")
 
 BATCH_SIZE = 16
-NUM_EPOCHS = 120 
-# LEARNING_RATE = 2e-4
-LEARNING_RATE = 5e-5 # Lowered for final precision fine-tuning
+NUM_EPOCHS = 30 
+LEARNING_RATE = 1e-5 # Stable Phase 2 rate
 # loss function from the original paper
 class wSDRLoss(nn.Module):
     def __init__(self, n_fft=512, hop_length=256):
@@ -44,7 +44,7 @@ class wSDRLoss(nn.Module):
         pred_wav = self.istft(pred_complex)
         
         noise_wav = mix_wav - clean_wav
-        pred_noise_wav = mix_wav - pred_wav # pred_noise_wav IS NEARLY ZERO if the model removed the noise ; no noise it left
+        pred_noise_wav = mix_wav - pred_wav
         
 
         clean_wav = clean_wav.flatten(1)
@@ -70,14 +70,36 @@ class wSDRLoss(nn.Module):
         # alpha is weight , if clean energy is high alpha is high focus on speech; if alpha is low noise is high concetrate on removing noise
         alpha = clean_energy / (clean_energy + noise_energy + eps)
         
-        loss = - (alpha * s_target + (1 - alpha) * n_target)
-        
-        #  FINAL SHIELD: Filter out any NaNs that managed to break through
-        loss = loss[~torch.isnan(loss)]
-        if loss.numel() == 0:
-            return torch.tensor(0.0, device=mix_real.device, requires_grad=True)
+        loss = -(alpha * s_target + (1 - alpha) * n_target)
             
         return torch.mean(loss)
+
+class WindSpecialistCriterion(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.wsdr = wSDRLoss()
+
+    def forward(self, mix_real, mix_imag, clean_real, clean_imag, pred_real, pred_imag):
+        l_wsdr = self.wsdr(mix_real, mix_imag, clean_real, clean_imag, pred_real, pred_imag)
+        
+        #magnitude MSE
+        eps_stab = 1e-7
+        target_mag = torch.sqrt(clean_real**2 + clean_imag**2 + 1e-8)
+        pred_mag = torch.sqrt(pred_real**2 + pred_imag**2 + 1e-8)
+        #old was 0.2 and no phase correction
+        l_mag = F.mse_loss(torch.pow(target_mag + eps_stab, 0.3), torch.pow(pred_mag + eps_stab, 0.3))
+        
+        #Phase Correction (Cosine Similarity)
+        cos_sim = (pred_real * clean_real + pred_imag * clean_imag) / (pred_mag * target_mag + 1e-8)
+        l_phase = torch.mean(1.0 - cos_sim)
+        
+        return l_wsdr + 1.0 * l_mag + 0.5 * l_phase
+
+def freeze_encoder(model):
+    print("Stable Phase 2: Freezing all Encoder layers (inc, down1-4).")
+    for module in [model.inc, model.down1, model.down2, model.down3, model.down4]:
+        for param in module.parameters():
+            param.requires_grad = False
 
 def train_one_epoch(model, dataloader, optimizer, criterion, epoch):
     model.train() # tell pytorch we are in training mode now ;turn on batchnorm and dropout(well we are not using dropout)
@@ -93,26 +115,26 @@ def train_one_epoch(model, dataloader, optimizer, criterion, epoch):
         
         loss = criterion(mix_real, mix_imag, clean_real, clean_imag, pred_clean_real, pred_clean_imag)
         
-        # If loss is still NaN, skip this batch entirely
-        if torch.isnan(loss) or loss.item() == 0:
+        if torch.isnan(loss):
             continue
             
         optimizer.zero_grad() # clean the gradient from the previous iteration
         loss.backward() # calculate the gradient of the loss with respect to model params
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-        optimizer.step() # chnage the brain weights based on the gradients; note this is not going to be in the validate_one_epoch 
+        optimizer.step()
         
         running_loss += loss.item() # add the loss to the running loss
-        loop.set_description(f"Epoch [{epoch+1}/{NUM_EPOCHS}]")
+        loop.set_description(f"Transfer Learning Epoch [{epoch+1}/{NUM_EPOCHS}]")
         loop.set_postfix(loss=loss.item())
         
     return running_loss / (len(dataloader) + 1e-8) # eps to prevent div-by-zero
-
+ 
 # (Rest of validation and main remain standard)
 def validate_one_epoch(model, dataloader, criterion):
     model.eval()
     running_loss = 0.0
-    with torch.no_grad(): # tell pytorch do not calculate gradient since we are checking performance here; not tracking;note : nograd makes validation faster and use half gpu memory
+    count = 0
+    with torch.no_grad():
         for mix_real, mix_imag, clean_real, clean_imag in dataloader:
             mix_real, mix_imag = mix_real.to(DEVICE), mix_imag.to(DEVICE)
             clean_real, clean_imag = clean_real.to(DEVICE), clean_imag.to(DEVICE)
@@ -134,66 +156,58 @@ def save_checkpoint(model, optimizer, scheduler, epoch, best_val_loss, filename)
     torch.save(checkpoint, filename)
 
 def main():
-    print(f"DNS TRAINING: Using full dataset from: {DATA_BASE}")
+    print(f"starting wind transfer learning")
     os.makedirs(SAVE_DIR, exist_ok=True)
-    start_epoch = 0
-    checkpoint_path = None
-    if os.path.exists(SAVE_DIR):
-        # 1. Check for the absolute latest (safest for Slurm timeouts)
-        latest_path = os.path.join(SAVE_DIR, "latest_checkpoint.pth")
-        if os.path.exists(latest_path):
-            checkpoint_path = latest_path
-        else:
-            # 2. Fallback to numbered backups
-            checkpoints = [f for f in os.listdir(SAVE_DIR) if f.startswith('dcunet_epoch_') and f.endswith('.pth')]
-            if checkpoints:
-                checkpoints.sort(key=lambda x: int(x.split('_')[-1].split('.')[0]))
-                checkpoint_path = os.path.join(SAVE_DIR, checkpoints[-1])
     
+    # initialize Model
     model = DeepComplexUNet(n_channels=1).to(DEVICE)
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    criterion = wSDRLoss()
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3, factor=0.5)
-    # reduce lerning rate when validation loss stop improve ; verbose  = true make it print when it reduce; its not working in the pytourch version 
-
-    if checkpoint_path:
-        print(f"Resuming from checkpoint: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        if 'scheduler_state_dict' in checkpoint:
-            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        start_epoch = checkpoint['epoch'] + 1
-        best_val_loss = checkpoint.get('best_val_loss', float('inf'))
-        
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = LEARNING_RATE
-
-    train_loader, val_loader = get_dataloaders(CLEAN_DIR, NOISE_DIR, RIR_DIR, batch_size=BATCH_SIZE, snr_range=(-15, 10))
     
-    log_file = os.path.join(SAVE_DIR, "training_log.csv")
-    if not os.path.exists(log_file) and start_epoch == 0:
-        with open(log_file, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Epoch", "Train_wSDR_Loss", "Val_wSDR_Loss"])
-    for epoch in range(start_epoch, NUM_EPOCHS):
-        current_lr = optimizer.param_groups[0]['lr']
-        print(f"\n[Epoch {epoch+1}/120] Current Learning Rate: {current_lr:.2e}")
+    #load pre trained weights
+    PRETRAINED_PATH = "../complex_checkpoints/dcunet_epoch_120.pth" 
+    if os.path.exists(PRETRAINED_PATH):
+        print(f"Loading weights from: {PRETRAINED_PATH}")
+        checkpoint = torch.load(PRETRAINED_PATH, map_location=DEVICE)
+        model.load_state_dict(checkpoint['model_state_dict'])
+    else:
+        print("weights not found")
+
+    #freeze encoder
+    freeze_encoder(model)
+    
+    #optimizer for trainable parameters only
+    trainable_params = filter(lambda p: p.requires_grad, model.parameters())
+    optimizer = optim.Adam(trainable_params, lr=LEARNING_RATE)
+    criterion = WindSpecialistCriterion()
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3, factor=0.5)
+
+    #load data- 10 % gnrl noise, 90 % wind noise
+    train_loader, val_loader = get_dataloaders(
+        CLEAN_DIR, WIND_DIR, NOISE_DIR, RIR_DIR, 
+        batch_size=BATCH_SIZE, snr_range=(-10, 5), max_files=10000
+    )
+    
+    log_file = os.path.join(SAVE_DIR, "wind_transfer_log.csv")
+    best_val_loss = float('inf')
+    
+    for epoch in range(NUM_EPOCHS):
         avg_loss = train_one_epoch(model, train_loader, optimizer, criterion, epoch)
         val_loss = validate_one_epoch(model, val_loader, criterion)
-        print(f"Epoch [{epoch+1}/{NUM_EPOCHS}] wSDR Train: {avg_loss:.4f} | Val: {val_loss:.4f}")
+        print(f"Epoch [{epoch+1}/{NUM_EPOCHS}] Loss Train: {avg_loss:.4f} | Val: {val_loss:.4f}")
+        
         with open(log_file, "a", newline="") as f:
             writer = csv.writer(f)
+            if epoch == 0: writer.writerow(["Epoch", "Train_Loss", "Val_Loss"])
             writer.writerow([epoch + 1, avg_loss, val_loss])
+            
         scheduler.step(val_loss)
-        # 1. Save "latest" for every single epoch (Safety snapshot)
-        latest_save_path = os.path.join(SAVE_DIR, "latest_checkpoint.pth")
-        save_checkpoint(model, optimizer, scheduler, epoch, val_loss, latest_save_path)
-        # 2. Save archival checkpoints every 10 epochs (History)
-        if (epoch + 1) % 10 == 0:
-            archive_path = os.path.join(SAVE_DIR, f"dcunet_epoch_{epoch+1}.pth")
-            save_checkpoint(model, optimizer, scheduler, epoch, val_loss, archive_path)
-            print(f"Archive checkpoint saved: {archive_path}")
+        
+        # Save checkpoints
+        save_path = os.path.join(SAVE_DIR, "wind_specialist_latest.pth")
+        torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'val_loss': val_loss}, save_path)
+        
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), os.path.join(SAVE_DIR, "wind_specialist_best.pth"))
 
 if __name__ == "__main__":
     main()
