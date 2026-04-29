@@ -4,3 +4,4 @@ tqdm # Progress bar for training
 matplotlib # spectrogram drawing
 numpy # mathematical operations
 soundfile # reading writing audio files
+pesq

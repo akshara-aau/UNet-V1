@@ -10,8 +10,8 @@ import numpy as np
 from complex_model import DeepComplexUNet
 
 
-def test_audio_segmentation(model_path):
-    output_path = "test_audio_DNS_120th_result/zahid-first-output.wav"
+def test_audio_segmentation(model_path, output_path):
+    # output_path = "test_audio_DNS_120th_result/zahid-first-output.wav"
     device = torch.device('mps') 
     print(f"Using local device: {device}")
 
@@ -167,7 +167,7 @@ def infer_local_audio(noisy_wav_path, model_path, output_path="cleaned_result_lo
     segment_audio(noisy_wav_path, output_dir=segments_dir)
     device = torch.device('mps') 
     print(f"Using local device: {device}")
-    test_audio_segmentation(model_path=model_path)
+    test_audio_segmentation(model_path=model_path, output_path=output_path)
 
     if not os.path.exists(model_path):
         print(f"ERROR: No model file found at {model_path}.")
@@ -278,10 +278,10 @@ def infer_local_audio(noisy_wav_path, model_path, output_path="cleaned_result_lo
 
 if __name__ == "__main__":
     FINAL_MODEL_FILE = "complex_checkpoints/dcunet_epoch_120_DNS.pth"
-    ZAHID_MODEL_FILE = "complex_checkpoints/best_model.pth"
+    ZAHID_MODEL_FILE = "complex_checkpoints/best_model_3.pth"
 
     infer_local_audio(
-        noisy_wav_path="test_audio/input.wav", 
-        model_path=ZAHID_MODEL_FILE, 
-        output_path="test_audio_DNS_120th_result/zahid-first-output.wav"
+        noisy_wav_path="test_audio/sitare-wind.wav", 
+        model_path=FINAL_MODEL_FILE, 
+        output_path="test_audio_DNS_120th_result/sitare-ak-output3.wav"
     )
