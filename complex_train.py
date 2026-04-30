@@ -139,12 +139,12 @@ def main():
     start_epoch = 0
     checkpoint_path = None
     if os.path.exists(SAVE_DIR):
-        # 1. Check for the absolute latest (safest for Slurm timeouts)
+        # Check for the absolute latest (safest for Slurm timeouts)
         latest_path = os.path.join(SAVE_DIR, "latest_checkpoint.pth")
         if os.path.exists(latest_path):
             checkpoint_path = latest_path
         else:
-            # 2. Fallback to numbered backups
+            # Fallback to numbered backups
             checkpoints = [f for f in os.listdir(SAVE_DIR) if f.startswith('dcunet_epoch_') and f.endswith('.pth')]
             if checkpoints:
                 checkpoints.sort(key=lambda x: int(x.split('_')[-1].split('.')[0]))
@@ -186,10 +186,10 @@ def main():
             writer = csv.writer(f)
             writer.writerow([epoch + 1, avg_loss, val_loss])
         scheduler.step(val_loss)
-        # 1. Save "latest" for every single epoch (Safety snapshot)
+        # Save "latest" for every single epoch (Safety snapshot)
         latest_save_path = os.path.join(SAVE_DIR, "latest_checkpoint.pth")
         save_checkpoint(model, optimizer, scheduler, epoch, val_loss, latest_save_path)
-        # 2. Save archival checkpoints every 10 epochs (History)
+        # Save archival checkpoints every 10 epochs (History)
         if (epoch + 1) % 10 == 0:
             archive_path = os.path.join(SAVE_DIR, f"dcunet_epoch_{epoch+1}.pth")
             save_checkpoint(model, optimizer, scheduler, epoch, val_loss, archive_path)

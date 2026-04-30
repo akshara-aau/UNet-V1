@@ -8,7 +8,7 @@ def infer_complex_audio(noisy_wav_path, model_path, output_path="complex_cleaned
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # 1. Load DCUNet Model
+    # Load DCUNet Model
     model = DeepComplexUNet(n_channels=1)
     
     checkpoint = torch.load(model_path, map_location=device, weights_only=True)
@@ -21,7 +21,7 @@ def infer_complex_audio(noisy_wav_path, model_path, output_path="complex_cleaned
     model.eval()
     print(f"Model loaded successfully from {model_path}.")
 
-    # 2. Audio settings
+    # Audio settings
     sample_rate = 16000
     n_fft = 512
     hop_length = 256
@@ -48,7 +48,7 @@ def infer_complex_audio(noisy_wav_path, model_path, output_path="complex_cleaned
     max_amp = torch.max(torch.abs(noisy_waveform)) + 1e-8
     noisy_waveform = noisy_waveform / max_amp
 
-    # 3. Apply STFT 
+    # Apply STFT 
     stft = torchaudio.transforms.Spectrogram(
         n_fft=n_fft, 
         hop_length=hop_length, 
@@ -75,7 +75,7 @@ def infer_complex_audio(noisy_wav_path, model_path, output_path="complex_cleaned
     mix_real_input = mix_real.unsqueeze(0).to(device)
     mix_imag_input = mix_imag.unsqueeze(0).to(device)
     
-    # 4. Predict Complex Mask
+    # Predict Complex Mask
     with torch.no_grad():
         mask_real, mask_imag = model(mix_real_input, mix_imag_input)
         
@@ -88,11 +88,11 @@ def infer_complex_audio(noisy_wav_path, model_path, output_path="complex_cleaned
     pred_clean_real = pred_clean_real.squeeze(0) * normalize_factor
     pred_clean_imag = pred_clean_imag.squeeze(0) * normalize_factor
     
-    # 5. Re-combine into a raw Complex Tensor
+    # Re-combine into a raw Complex Tensor
     # We no longer need Griffin-Lim because the model PREDICTED the phase geometry for us!
     cleaned_complex = torch.complex(pred_clean_real, pred_clean_imag).cpu()
     
-    # 6. Apply Inverse STFT
+    # Apply Inverse STFT
     cleaned_waveform = istft(cleaned_complex)
     
     # Restore Original Volume

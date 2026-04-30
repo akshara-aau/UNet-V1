@@ -14,7 +14,7 @@ def infer_local_audio(noisy_wav_path, model_path, output_path="cleaned_result_lo
         print(f"ERROR: No model file found at {model_path}.")
         return
 
-    # 1. Load DCUNet Model
+    # Load DCUNet Model
     model = DeepComplexUNet(n_channels=1)
     checkpoint = torch.load(model_path, map_location=device, weights_only=True)
     if 'model_state_dict' in checkpoint:
@@ -24,7 +24,7 @@ def infer_local_audio(noisy_wav_path, model_path, output_path="cleaned_result_lo
     model.eval()
     print(f"Model loaded successfully.")
 
-    # 2. Audio settings
+    # Audio settings
     target_sr = 16000
     n_fft = 512
     hop_length = 256
@@ -54,7 +54,7 @@ def infer_local_audio(noisy_wav_path, model_path, output_path="cleaned_result_lo
     if sr != target_sr:
         noisy_waveform = torchaudio.transforms.Resample(sr, target_sr)(noisy_waveform)
     
-    # 3. Apply STFT 
+    # Apply STFT 
     stft = torchaudio.transforms.Spectrogram(
         n_fft=n_fft, hop_length=hop_length, power=None, normalized=True 
     )
@@ -68,7 +68,7 @@ def infer_local_audio(noisy_wav_path, model_path, output_path="cleaned_result_lo
     mix_real = (complex_spectrogram.real / normalize_factor).unsqueeze(0)
     mix_imag = (complex_spectrogram.imag / normalize_factor).unsqueeze(0)
     
-    # 4. Predict Complex Mask
+    # Predict Complex Mask
     with torch.no_grad():
         mask_real, mask_imag = model(mix_real, mix_imag)
         
@@ -81,10 +81,10 @@ def infer_local_audio(noisy_wav_path, model_path, output_path="cleaned_result_lo
     pred_clean_real = pred_clean_real.squeeze(0) * normalize_factor
     pred_clean_imag = pred_clean_imag.squeeze(0) * normalize_factor
     
-    # 5. Re-combine 
+    # Re-combine 
     cleaned_complex = torch.complex(pred_clean_real, pred_clean_imag)
     
-    # 6. Apply Inverse STFT
+    # Apply Inverse STFT
     cleaned_waveform = istft(cleaned_complex).squeeze(0).numpy()
 
     # Restore Original Volume
