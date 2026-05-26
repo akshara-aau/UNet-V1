@@ -30,8 +30,7 @@ Peak normalization
 3. complex_train.py: 
 Training pipeline using:
 
-Complex spectrogram processing
-wSDR loss optimization
+Complex spectrogram processing and wSDR loss optimization
 
 4. complex_local_inference.py: 
 
