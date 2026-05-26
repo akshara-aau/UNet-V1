@@ -22,8 +22,7 @@ class ComplexConvTranspose2d(nn.Module):
         self.conv_t_imag = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding)
 
     def forward(self, real, imag):
-        # Matching exact sign convention of forward ComplexConv2d
-        # to guarantee Skip-Connection phase geometry doesn't destructively interfere
+        #matching exact sign convention of forward ComplexConv2d
         out_real = self.conv_t_real(real) - self.conv_t_imag(imag)
         out_imag = self.conv_t_real(imag) + self.conv_t_imag(real)
         return out_real, out_imag
@@ -67,8 +66,6 @@ class ComplexDoubleConv(nn.Module):
         return self.relu2(r2, i2)
 
 class ComplexDown(nn.Module):
-
-
     # instead of maxpooling we here used strided convolution to downsample the feature maps to avoid loss of phase information
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -88,7 +85,7 @@ class ComplexUp(nn.Module):
     def forward(self, real_en, imag_en, real_up, imag_up):
         r_upsampled, i_upsampled = self.up(real_up, imag_up)
         
-        # Padding to fix mismatch like in regular U-Net
+        # Padding 
         diffY = real_en.size()[2] - r_upsampled.size()[2]
         diffX = real_en.size()[3] - r_upsampled.size()[3]
         

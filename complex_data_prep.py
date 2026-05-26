@@ -50,10 +50,10 @@ class ComplexSpeechDataset(Dataset):
                 if waveform.shape[0] > 1:
                     waveform = torch.mean(waveform, dim=0, keepdim=True)
                 
-                # Check for "Dead/Silent" audio to prevent NaN loss
+                #check for silent audio to prevent NaN loss
                 max_amp = torch.max(torch.abs(waveform))
                 if max_amp < 1e-6:
-                    # If file is silent, pick a random new one and try again
+                    #if file is silent, pick a random new one and try again
                     path = random.choice(self.clean_files)
                     continue
 
@@ -82,7 +82,7 @@ class ComplexSpeechDataset(Dataset):
 
     def __getitem__(self, idx):
         clean_waveform_dry = self._load_audio(self.clean_files[idx])
-        # Also ensure noise isn't silent
+        #also ensure noise is not silent
         noise_waveform = self._load_audio(random.choice(self.noise_files))
         
         reverbed_clean = self._apply_reverb(clean_waveform_dry)
@@ -97,15 +97,12 @@ class ComplexSpeechDataset(Dataset):
         scaled_noise = noise_waveform * noise_scalar
         
         mixture = reverbed_clean + scaled_noise
-        
-        # Unconditional normalization
+        #unconditional normalization
         max_val = torch.max(torch.abs(mixture)) + eps
         mixture = mixture / max_val
         clean_waveform_dry = clean_waveform_dry / max_val
-        
         mix_stft = self.stft(mixture)
         clean_stft = self.stft(clean_waveform_dry)
-        
         normalize_factor = torch.max(torch.abs(mix_stft)) + eps
         mix_real = mix_stft.real / normalize_factor
         mix_imag = mix_stft.imag / normalize_factor
