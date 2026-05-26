@@ -10,7 +10,6 @@ import torchaudio
 from complex_model import DeepComplexUNet
 from complex_data_prep import get_dataloaders
 
-# --- TARGET CLUSTER CONFIGURATION ---
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 SAVE_DIR = "./complex_checkpoints"
 
@@ -23,7 +22,6 @@ BATCH_SIZE = 16
 NUM_EPOCHS = 120 
 # LEARNING_RATE = 2e-4
 LEARNING_RATE = 5e-5 # Lowered for final precision fine-tuning
-# loss function from the original paper
 class wSDRLoss(nn.Module):
     def __init__(self, n_fft=512, hop_length=256):
         super(wSDRLoss, self).__init__()
@@ -31,7 +29,6 @@ class wSDRLoss(nn.Module):
             n_fft=n_fft, hop_length=hop_length, normalized=True
         )
     # when call criterion(a,b,c,d,e,f) it will call this function
-
     # this recieve 6 tensors the real imag part of the mix, clean and predicted spectrograms
     def forward(self, mix_real, mix_imag, clean_real, clean_imag, pred_real, pred_imag):
         self.istft = self.istft.to(mix_real.device)
@@ -72,7 +69,7 @@ class wSDRLoss(nn.Module):
         
         loss = - (alpha * s_target + (1 - alpha) * n_target)
         
-        #  FINAL SHIELD: Filter out any NaNs that managed to break through
+        #Filter out any NaNs that managed to break through
         loss = loss[~torch.isnan(loss)]
         if loss.numel() == 0:
             return torch.tensor(0.0, device=mix_real.device, requires_grad=True)
@@ -93,22 +90,21 @@ def train_one_epoch(model, dataloader, optimizer, criterion, epoch):
         
         loss = criterion(mix_real, mix_imag, clean_real, clean_imag, pred_clean_real, pred_clean_imag)
         
-        # If loss is still NaN, skip this batch entirely
+        # If loss is still nan, skip this batch entirely
         if torch.isnan(loss) or loss.item() == 0:
             continue
             
-        optimizer.zero_grad() # clean the gradient from the previous iteration
-        loss.backward() # calculate the gradient of the loss with respect to model params
+        optimizer.zero_grad() #clean the gradient from the previous iteration
+        loss.backward() #calculate the gradient of the loss with respect to model params
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-        optimizer.step() # chnage the brain weights based on the gradients; note this is not going to be in the validate_one_epoch 
+        optimizer.step() #chnage the brain weights based on the gradients; note this is not going to be in the validate_one_epoch 
         
-        running_loss += loss.item() # add the loss to the running loss
+        running_loss += loss.item() #add the loss to the running loss
         loop.set_description(f"Epoch [{epoch+1}/{NUM_EPOCHS}]")
         loop.set_postfix(loss=loss.item())
         
     return running_loss / (len(dataloader) + 1e-8) # eps to prevent div-by-zero
 
-# (Rest of validation and main remain standard)
 def validate_one_epoch(model, dataloader, criterion):
     model.eval()
     running_loss = 0.0
@@ -139,12 +135,12 @@ def main():
     start_epoch = 0
     checkpoint_path = None
     if os.path.exists(SAVE_DIR):
-        # Check for the absolute latest (safest for Slurm timeouts)
+        #check for the absolute latest (safest for Slurm timeouts)
         latest_path = os.path.join(SAVE_DIR, "latest_checkpoint.pth")
         if os.path.exists(latest_path):
             checkpoint_path = latest_path
         else:
-            # Fallback to numbered backups
+            #fallback to numbered backups
             checkpoints = [f for f in os.listdir(SAVE_DIR) if f.startswith('dcunet_epoch_') and f.endswith('.pth')]
             if checkpoints:
                 checkpoints.sort(key=lambda x: int(x.split('_')[-1].split('.')[0]))
@@ -170,7 +166,6 @@ def main():
             param_group['lr'] = LEARNING_RATE
 
     train_loader, val_loader = get_dataloaders(CLEAN_DIR, NOISE_DIR, RIR_DIR, batch_size=BATCH_SIZE, snr_range=(-15, 10))
-    
     log_file = os.path.join(SAVE_DIR, "training_log.csv")
     if not os.path.exists(log_file) and start_epoch == 0:
         with open(log_file, "w", newline="") as f:
@@ -186,10 +181,10 @@ def main():
             writer = csv.writer(f)
             writer.writerow([epoch + 1, avg_loss, val_loss])
         scheduler.step(val_loss)
-        # Save "latest" for every single epoch (Safety snapshot)
+        #save latest for every single epoch
         latest_save_path = os.path.join(SAVE_DIR, "latest_checkpoint.pth")
         save_checkpoint(model, optimizer, scheduler, epoch, val_loss, latest_save_path)
-        # Save archival checkpoints every 10 epochs (History)
+        #save archival checkpoints every 10 epochs
         if (epoch + 1) % 10 == 0:
             archive_path = os.path.join(SAVE_DIR, f"dcunet_epoch_{epoch+1}.pth")
             save_checkpoint(model, optimizer, scheduler, epoch, val_loss, archive_path)
